@@ -282,25 +282,42 @@ export async function callAIProvider(
 
   // 3. NVIDIA Nemotron (NVIDIA NIM)
   if (provider === "nemotron") {
-    const chosenModel = model || "nvidia/llama-3.1-nemotron-70b-instruct";
+    const chosenModel = model || "nvidia/nemotron-3.5-lightning-30b-a3b";
+    const isNemotron35 = chosenModel === "nvidia/nemotron-3.5-lightning-30b-a3b";
+
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.2,
+      max_tokens: isNemotron35 ? 16384 : 4096,
+    };
+
+    if (isNemotron35) {
+      bodyPayload.extra_body = {
+        chat_template_kwargs: { enable_thinking: true },
+        reasoning_budget: 16384,
+      };
+    }
+
     const data: any = await fetchJsonSafely("https://integrate.api.nvidia.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
-        max_tokens: 4096,
-      }),
+      body: JSON.stringify(bodyPayload),
     });
 
-    const text = data.choices?.[0]?.message?.content || "";
+    const message = data.choices?.[0]?.message || {};
+    let text = message.content || "";
+    const reasoningContent = message.reasoning_content || data.choices?.[0]?.delta?.reasoning_content;
+    if (!text && reasoningContent) {
+      text = reasoningContent;
+    }
+
     return {
       text,
       provider: "nemotron",
@@ -1509,7 +1526,7 @@ PROVIDERS = {
     "nemotron": {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "api_key_env": "NVIDIA_API_KEY",
-        "default_model": "nvidia/llama-3.1-nemotron-70b-instruct"
+        "default_model": "nvidia/nemotron-3.5-lightning-30b-a3b"
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com",
@@ -1544,16 +1561,30 @@ def run_lead_finder(provider_name: str, user_prompt: str):
         base_url=config["base_url"]
     )
 
+    extra_kwargs = {}
+    if provider_name.lower() == "nemotron" and config["default_model"] == "nvidia/nemotron-3.5-lightning-30b-a3b":
+        extra_kwargs["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": True},
+            "reasoning_budget": 16384
+        }
+        extra_kwargs["max_tokens"] = 16384
+
     response = client.chat.completions.create(
         model=config["default_model"],
         messages=[
             {"role": "system", "content": SYSTEM_INSTRUCTION},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.2
+        temperature=0.2,
+        **extra_kwargs
     )
 
-    return response.choices[0].message.content
+    choice = response.choices[0]
+    reasoning = getattr(choice.message, "reasoning_content", None) if hasattr(choice, "message") else None
+    content = choice.message.content if hasattr(choice, "message") else ""
+    if reasoning and not content:
+        return reasoning
+    return content
 
 # Example usage:
 if __name__ == "__main__":
