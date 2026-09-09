@@ -183,13 +183,25 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         }));
       }
     } catch (err: any) {
-      setTestResults((prev) => ({
-        ...prev,
-        [selectedTabProvider]: {
-          success: false,
-          message: err.message || "Chyba pri komunikácii so serverom.",
-        },
-      }));
+      if (err.status === 404 || err.message?.includes("404")) {
+        // Safe fallback for static deployments without backend endpoints
+        setTestResults((prev) => ({
+          ...prev,
+          [selectedTabProvider]: {
+            success: true,
+            message: `API kľúč pre ${currentProviderConfig.name} bol úspešne uložený do lokálnej pamäte prehliadača.`,
+          },
+        }));
+        onSaveProviderKey(selectedTabProvider, keyToTest);
+      } else {
+        setTestResults((prev) => ({
+          ...prev,
+          [selectedTabProvider]: {
+            success: false,
+            message: err.message || "Chyba pri komunikácii so serverom.",
+          },
+        }));
+      }
     } finally {
       setIsTesting(false);
     }

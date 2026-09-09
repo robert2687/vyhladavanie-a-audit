@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { X, Sparkles, Copy, Check, Sliders, Mail } from "lucide-react";
 import { Prospect, AIProviderId } from "../types";
 import { safeFetchJson } from "../utils/api";
+import { generateRefinedPitchFallback } from "../utils/fallbackData";
 
 interface RefinePitchModalProps {
   prospect: Prospect | null;
@@ -68,7 +69,18 @@ export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
         setBody(data.body);
       }
     } catch (err) {
-      console.error("Failed to regenerate pitch", err);
+      console.error("Failed to regenerate pitch via API, using fallback generator:", err);
+      const fallback = generateRefinedPitchFallback(
+        prospect.companyName,
+        prospect.targetDecisionMaker,
+        customOffer || prospect.valueProposition,
+        tone,
+        language
+      );
+      if (fallback.subject && fallback.body) {
+        setSubject(fallback.subject);
+        setBody(fallback.body);
+      }
     } finally {
       setIsGenerating(false);
     }
