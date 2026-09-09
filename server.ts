@@ -189,7 +189,7 @@ async function fetchJsonSafely(url: string, options: RequestInit): Promise<any> 
 export async function callAIProvider(
   params: ProviderCallParams
 ): Promise<ProviderCallResult> {
-  const { provider, apiKey, model, systemInstruction, prompt, jsonMode } = params;
+  let { provider, apiKey, model, systemInstruction, prompt, jsonMode } = params;
 
   if (provider === "gemini") {
     const ai = getGenAI(apiKey);

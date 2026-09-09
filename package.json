@@ -9,7 +9,7 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/deepseek.test.ts"
+    "test": "tsx tests/deepseek.test.ts && tsx tests/nemotron.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
