@@ -311,6 +311,21 @@ export async function callAIProvider(
   // 4. DeepSeek
   if (provider === "deepseek") {
     const chosenModel = model || "deepseek-chat";
+    const isReasoningModel = chosenModel === "deepseek-reasoner";
+    const messages = isReasoningModel
+      ? [
+          {
+            role: "user",
+            content: systemInstruction
+              ? `${systemInstruction}\n\n${prompt}`
+              : prompt,
+          },
+        ]
+      : [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ];
+
     const data: any = await fetchJsonSafely("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: {
@@ -319,10 +334,7 @@ export async function callAIProvider(
       },
       body: JSON.stringify({
         model: chosenModel,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: prompt },
-        ],
+        messages,
         temperature: 0.2,
         response_format: jsonMode ? { type: "json_object" } : undefined,
       }),
