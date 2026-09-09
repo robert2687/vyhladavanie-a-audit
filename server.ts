@@ -128,7 +128,9 @@ export function resolveProviderAndKey(req: express.Request): {
   let apiKey: string | undefined =
     (req.headers[`x-${provider}-api-key`] as string) ||
     (req.headers["x-custom-api-key"] as string) ||
-    (req.headers["x-api-key"] as string) ||
+    (Array.isArray(req.headers["x-api-key"])
+      ? req.headers["x-api-key"][0]
+      : (req.headers["x-api-key"] as string | undefined)) ||
     (provider === "gemini" ? (req.headers["x-gemini-api-key"] as string) : undefined) ||
     req.body?.customApiKey ||
     req.body?.apiKey;
