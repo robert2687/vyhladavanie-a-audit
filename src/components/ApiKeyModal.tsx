@@ -200,7 +200,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
     // Save all keys in state
     Object.entries(localKeys).forEach(([prov, k]) => {
-      onSaveProviderKey(prov as AIProviderId, (k || "").trim());
+      onSaveProviderKey(prov as AIProviderId, (typeof k === "string" ? k : "").trim());
     });
 
     onClose();
