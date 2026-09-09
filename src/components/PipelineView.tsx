@@ -121,12 +121,12 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
 
   if (savedProspects.length === 0) {
     return (
-      <div className="bg-white rounded-2xl border border-stone-200 p-12 text-center">
+      <div className="bg-white rounded-2xl border border-stone-200 p-8 sm:p-12 text-center">
         <div className="w-12 h-12 rounded-2xl bg-stone-100 text-stone-400 flex items-center justify-center mx-auto mb-4">
           <Building2 className="w-6 h-6" />
         </div>
         <h3 className="text-base font-bold text-stone-900">Váš Pipeline je zatiaľ prázdny</h3>
-        <p className="text-sm text-stone-500 max-w-md mx-auto mt-1.5 mb-6">
+        <p className="text-xs sm:text-sm text-stone-500 max-w-md mx-auto mt-1.5 mb-4">
           Vyhľadajte slovenské SMB firmy v záložke <strong>Objavovanie trhu</strong> alebo zadajte webstránku v <strong>Okamžitom audite</strong> a kliknite na tlačidlo <em>"Uložiť do Pipeline"</em>.
         </p>
       </div>
@@ -134,17 +134,17 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Controls & Export Bar */}
-      <div className="bg-white rounded-2xl border border-stone-200 p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-        <div className="flex flex-col sm:flex-row items-center gap-3 flex-1">
+      <div className="bg-white rounded-2xl border border-stone-200 p-3.5 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 flex-1">
           <div className="relative w-full sm:w-64">
             <input
               type="text"
               placeholder="Filtrovať firmu, konateľa..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-stone-50 border border-stone-300 rounded-xl pl-9 pr-3 py-2 text-xs sm:text-sm text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-600"
+              className="w-full bg-stone-50 border border-stone-300 rounded-xl pl-9 pr-3 h-11 text-base sm:text-sm text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-600 touch-manipulation"
             />
             <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
           </div>
@@ -152,7 +152,7 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="w-full sm:w-auto bg-stone-50 border border-stone-300 rounded-xl px-3 py-2 text-xs sm:text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-blue-600/30"
+            className="w-full sm:w-auto bg-stone-50 border border-stone-300 rounded-xl px-3 h-11 text-base sm:text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-blue-600/30 touch-manipulation"
           >
             <option value="all">Všetky stavy ({savedProspects.length})</option>
             <option value="new">Nové</option>
@@ -163,39 +163,39 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
         </div>
 
         {/* Action Buttons */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-3 sm:flex items-center gap-1.5 sm:gap-2 pt-1 sm:pt-0">
           <button
             onClick={exportToCSV}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 transition-colors"
+            className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 transition-colors min-h-[40px] touch-manipulation"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export CSV</span>
+            <Download className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Export CSV</span>
           </button>
 
           <button
             onClick={copyAllMarkdown}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 transition-colors"
+            className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 transition-colors min-h-[40px] touch-manipulation"
           >
             {copiedAll ? (
               <>
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="text-emerald-700">Skopírované do schránky</span>
+                <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="text-emerald-700 truncate">Skopírované</span>
               </>
             ) : (
               <>
-                <Copy className="w-3.5 h-3.5" />
-                <span>Kopírovať všetko (Markdown)</span>
+                <Copy className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Kopírovať MD</span>
               </>
             )}
           </button>
 
           <button
             onClick={onClearAll}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-xl text-rose-600 hover:bg-rose-50 transition-colors"
+            className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl text-rose-600 bg-rose-50/50 hover:bg-rose-50 transition-colors min-h-[40px] touch-manipulation"
             title="Vyprázdniť pipeline"
           >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Vymazať</span>
+            <Trash2 className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Vymazať</span>
           </button>
         </div>
       </div>

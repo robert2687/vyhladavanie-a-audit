@@ -142,36 +142,36 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-stone-900/60 backdrop-blur-xs animate-in fade-in duration-200">
       <div
         id="api-key-modal"
-        className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-stone-200 relative overflow-hidden"
+        className="bg-white rounded-3xl max-w-lg w-full p-4 sm:p-7 shadow-2xl border border-stone-200 relative overflow-hidden max-h-[92vh] flex flex-col"
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-stone-100 mb-6">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center">
+        <div className="flex items-center justify-between pb-3 sm:pb-4 border-b border-stone-100 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center shrink-0">
               <Key className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-stone-900">
-                Nastavenia vlastného API kľúča
+              <h3 className="text-base sm:text-lg font-bold text-stone-900 leading-tight">
+                Nastavenia API kľúča
               </h3>
-              <p className="text-xs text-stone-500">
-                Priame pripojenie na Google Gemini & Multi-Provider modely
+              <p className="text-[11px] sm:text-xs text-stone-500">
+                Priame pripojenie na Google Gemini modely
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-xl text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+            className="p-2 rounded-xl text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors touch-manipulation"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Gemini API Key Input */}
-        <div className="space-y-4">
+        {/* Scrollable body */}
+        <div className="overflow-y-auto py-4 space-y-4 flex-1 pr-1">
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label
@@ -342,11 +342,11 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-end gap-2.5 mt-6 pt-4 border-t border-stone-100">
+        <div className="flex items-center justify-end gap-2.5 pt-3 sm:pt-4 border-t border-stone-100 shrink-0">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-xl transition-colors"
+            className="px-4 py-2.5 min-h-[42px] text-xs font-semibold text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-xl transition-colors touch-manipulation"
           >
             Zatvoriť
           </button>
@@ -354,7 +354,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             id="save-api-key-btn"
             type="button"
             onClick={handleSave}
-            className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors shadow-xs flex items-center gap-1.5"
+            className="px-5 py-2.5 min-h-[42px] text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors shadow-xs flex items-center justify-center gap-1.5 touch-manipulation"
           >
             <Check className="w-4 h-4" />
             <span>Uložiť kľúč</span>

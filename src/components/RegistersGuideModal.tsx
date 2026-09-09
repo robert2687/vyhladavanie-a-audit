@@ -150,40 +150,40 @@ export const RegistersGuideModal: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto">
+    <div className="space-y-6 sm:space-y-8 max-w-5xl mx-auto">
       {/* Intro Hero */}
-      <div className="bg-gradient-to-br from-blue-900 via-indigo-900 to-slate-900 rounded-3xl p-6 sm:p-8 text-white shadow-md">
+      <div className="bg-gradient-to-br from-blue-900 via-indigo-900 to-slate-900 rounded-2xl sm:rounded-3xl p-5 sm:p-8 text-white shadow-md">
         <div className="max-w-2xl">
           <span className="text-xs font-semibold uppercase tracking-widest text-blue-300">
             Metodika B2B auditu & lead generation
           </span>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white mt-1">
+          <h2 className="text-lg sm:text-2xl font-bold tracking-tight text-white mt-1 leading-snug">
             Ako vyhľadávať a oslovovať slovenské SMB (3–50 zamestnancov)
           </h2>
-          <p className="text-sm text-blue-100/90 mt-2 leading-relaxed">
+          <p className="text-xs sm:text-sm text-blue-100/90 mt-2 leading-relaxed">
             Slovenský B2B trh si vyžaduje osobitý prístup: majitelia a konatelia menších firiem sú preťažení operatívou. Ignorujú generické šablóny, no reagujú na konkrétne poukázanie na nefunkčnosť na ich webe a priame riešenie šetriace čas.
           </p>
         </div>
       </div>
 
       {/* Universal System Instructions (English) Section */}
-      <div className="bg-white rounded-2xl border border-stone-200 p-6 sm:p-8 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+      <div className="bg-white rounded-2xl border border-stone-200 p-4 sm:p-8 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 mb-4">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 rounded-lg bg-indigo-50 text-indigo-700">
+            <span className="p-1.5 rounded-lg bg-indigo-50 text-indigo-700 shrink-0">
               <Terminal className="w-5 h-5" />
             </span>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg font-bold text-stone-900">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-base sm:text-lg font-bold text-stone-900 leading-tight">
                   Universal System Instructions (English)
                 </h3>
-                <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-md">
+                <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-md">
                   <Sparkles className="w-3 h-3 text-emerald-600" />
                   Aktívne v API parametroch
                 </span>
               </div>
-              <p className="text-xs text-stone-500 mt-0.5">
+              <p className="text-[11px] sm:text-xs text-stone-500 mt-0.5">
                 Presný systémový prompt vložený do parametra <code className="text-stone-700 bg-stone-100 px-1 py-0.5 rounded text-[11px]">config.systemInstruction</code> API volaní
               </p>
             </div>
@@ -192,7 +192,7 @@ export const RegistersGuideModal: React.FC = () => {
           <button
             id="copy-system-prompt-btn"
             onClick={handleCopyPrompt}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all self-start sm:self-auto ${
+            className={`inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition-all min-h-[40px] touch-manipulation w-full sm:w-auto ${
               copiedPrompt
                 ? "bg-emerald-50 text-emerald-700 border-emerald-300"
                 : "bg-white text-stone-700 border-stone-300 hover:bg-stone-50 hover:text-stone-900"
@@ -212,7 +212,7 @@ export const RegistersGuideModal: React.FC = () => {
           </button>
         </div>
 
-        <div className="relative rounded-xl border border-stone-200 bg-stone-900 text-stone-100 p-4 font-mono text-xs overflow-x-auto leading-relaxed max-h-80">
+        <div className="relative rounded-xl border border-stone-200 bg-stone-900 text-stone-100 p-3.5 sm:p-4 font-mono text-xs overflow-x-auto leading-relaxed max-h-80">
           <pre className="whitespace-pre-wrap font-sans text-stone-200 text-xs sm:text-[13px] leading-relaxed">
             {UNIVERSAL_SYSTEM_PROMPT_TEXT}
           </pre>
@@ -220,33 +220,33 @@ export const RegistersGuideModal: React.FC = () => {
       </div>
 
       {/* Multi-Provider Python Integration Example Section */}
-      <div className="bg-white rounded-2xl border border-stone-200 p-6 sm:p-8 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+      <div className="bg-white rounded-2xl border border-stone-200 p-4 sm:p-8 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 mb-4">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700">
+            <span className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 shrink-0">
               <FileCode className="w-5 h-5" />
             </span>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-lg font-bold text-stone-900">
+                <h3 className="text-base sm:text-lg font-bold text-stone-900 leading-tight">
                   Multi-Provider Python Integration Example
                 </h3>
-                <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-md">
+                <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-semibold bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-md">
                   <Layers className="w-3 h-3 text-blue-600" />
                   OpenAI-Compatible
                 </span>
               </div>
-              <p className="text-xs text-stone-500 mt-0.5">
+              <p className="text-[11px] sm:text-xs text-stone-500 mt-0.5">
                 Jednotný setup s vopred vloženými inštrukciami pre DeepSeek, NVIDIA Nemotron, xAI Grok a OpenAI
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+          <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
             <button
               id="copy-python-code-btn"
               onClick={handleCopyPython}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all ${
+              className={`inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition-all min-h-[40px] touch-manipulation ${
                 copiedPython
                   ? "bg-emerald-50 text-emerald-700 border-emerald-300"
                   : "bg-white text-stone-700 border-stone-300 hover:bg-stone-50 hover:text-stone-900"
@@ -268,7 +268,7 @@ export const RegistersGuideModal: React.FC = () => {
             <button
               id="download-python-btn"
               onClick={handleDownloadPython}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-xs"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-xs min-h-[40px] touch-manipulation"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Stiahnuť .py skript</span>
