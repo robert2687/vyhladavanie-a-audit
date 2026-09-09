@@ -1,12 +1,15 @@
 import React, { useState } from "react";
 import { X, Sparkles, Copy, Check, Sliders, Mail } from "lucide-react";
-import { Prospect } from "../types";
+import { Prospect, AIProviderId } from "../types";
 
 interface RefinePitchModalProps {
   prospect: Prospect | null;
   isOpen: boolean;
   onClose: () => void;
   onSaveUpdatedPitch: (prospectId: string, subject: string, body: string) => void;
+  activeProvider?: AIProviderId;
+  activeApiKey?: string;
+  activeModel?: string;
 }
 
 export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
@@ -14,6 +17,9 @@ export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
   isOpen,
   onClose,
   onSaveUpdatedPitch,
+  activeProvider = "gemini",
+  activeApiKey = "",
+  activeModel,
 }) => {
   if (!isOpen || !prospect) return null;
 
@@ -30,14 +36,18 @@ export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
   const handleRegenerate = async () => {
     setIsGenerating(true);
     try {
-      const savedKey = localStorage.getItem("slovak_leadgen_gemini_key") || "";
       const res = await fetch("/api/leads/refine-pitch", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(savedKey ? { "x-gemini-api-key": savedKey } : {}),
+          "x-ai-provider": activeProvider,
+          ...(activeModel ? { "x-ai-model": activeModel } : {}),
+          ...(activeApiKey ? { [`x-${activeProvider}-api-key`]: activeApiKey, "x-custom-api-key": activeApiKey } : {}),
         },
         body: JSON.stringify({
+          provider: activeProvider,
+          apiKey: activeApiKey || undefined,
+          model: activeModel,
           companyName: prospect.companyName,
           decisionMaker: prospect.targetDecisionMaker,
           webSignals: prospect.identifiedWebSignals,
