@@ -183,11 +183,15 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         }));
       }
     } catch (err: any) {
+      const errorMessage =
+        err.status === 404
+          ? "Požadovaný koncový bod nebol nájdený (HTTP 404)."
+          : err.message || "Chyba pri komunikácii so serverom.";
       setTestResults((prev) => ({
         ...prev,
         [selectedTabProvider]: {
           success: false,
-          message: err.message || "Chyba pri komunikácii so serverom.",
+          message: errorMessage,
         },
       }));
     } finally {
