@@ -8,8 +8,9 @@ import { RegistersGuideModal } from "./components/RegistersGuideModal";
 import { RefinePitchModal } from "./components/RefinePitchModal";
 import { ApiKeyModal } from "./components/ApiKeyModal";
 import { SearchHistory } from "./components/SearchHistory";
-import { Prospect, SearchFilterState, SearchHistoryItem, TabType } from "./types";
+import { Prospect, SearchFilterState, SearchHistoryItem, TabType, AIProviderId } from "./types";
 import { SLOVAK_INDUSTRIES, SLOVAK_REGIONS } from "./data/slovakData";
+import { AI_PROVIDERS, DEFAULT_AI_PROVIDER } from "./data/aiProviders";
 import {
   Sparkles,
   Building2,
@@ -103,27 +104,120 @@ export default function App() {
     }
   };
 
-  // Custom API Key State
-  const [customApiKey, setCustomApiKey] = useState<string>(() => {
+  // AI Provider & Key State
+  const [activeProvider, setActiveProvider] = useState<AIProviderId>(() => {
     try {
-      return localStorage.getItem("slovak_leadgen_gemini_key") || "";
+      const storedProvider = localStorage.getItem("slovak_leadgen_active_provider");
+      return storedProvider && AI_PROVIDERS.some((p) => p.id === storedProvider)
+        ? (storedProvider as AIProviderId)
+        : DEFAULT_AI_PROVIDER;
     } catch {
-      return "";
+      return DEFAULT_AI_PROVIDER;
     }
   });
+
+  const [providerKeys, setProviderKeys] = useState<Record<AIProviderId, string>>(() => {
+    try {
+      const saved = localStorage.getItem("slovak_leadgen_provider_keys");
+      const parsed = saved ? JSON.parse(saved) : {};
+      const legacyGemini = localStorage.getItem("slovak_leadgen_gemini_key");
+      if (legacyGemini && !parsed.gemini) {
+        parsed.gemini = legacyGemini;
+      }
+      return {
+        gemini: "",
+        anthropic: "",
+        perplexity: "",
+        nemotron: "",
+        deepseek: "",
+        openai: "",
+        grok: "",
+        ...parsed,
+      };
+    } catch {
+      return {
+        gemini: "",
+        anthropic: "",
+        perplexity: "",
+        nemotron: "",
+        deepseek: "",
+        openai: "",
+        grok: "",
+      };
+    }
+  });
+
+  const [providerModels, setProviderModels] = useState<Record<AIProviderId, string>>(() => {
+    try {
+      const saved = localStorage.getItem("slovak_leadgen_provider_models");
+      const parsed = saved ? JSON.parse(saved) : {};
+      const defaults: Record<AIProviderId, string> = {
+        gemini: "gemini-3.8-flash",
+        anthropic: "claude-3-5-sonnet-20241022",
+        perplexity: "sonar",
+        nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",
+        deepseek: "deepseek-chat",
+        openai: "gpt-4o",
+        grok: "grok-2-latest",
+      };
+      AI_PROVIDERS.forEach((p) => {
+        if (!defaults[p.id]) defaults[p.id] = p.defaultModel;
+      });
+      return { ...defaults, ...parsed };
+    } catch {
+      return {
+        gemini: "gemini-3.8-flash",
+        anthropic: "claude-3-5-sonnet-20241022",
+        perplexity: "sonar",
+        nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",
+        deepseek: "deepseek-chat",
+        openai: "gpt-4o",
+        grok: "grok-2-latest",
+      };
+    }
+  });
+
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
 
-  const handleSaveGeminiKey = (key: string) => {
-    setCustomApiKey(key);
+  const currentProviderConfig =
+    AI_PROVIDERS.find((p) => p.id === activeProvider) || AI_PROVIDERS[0];
+  const activeApiKey = providerKeys[activeProvider] || "";
+  const activeModel = providerModels[activeProvider] || currentProviderConfig.defaultModel;
+
+  const handleSelectActiveProvider = (provider: AIProviderId) => {
+    setActiveProvider(provider);
     try {
-      if (key) {
-        localStorage.setItem("slovak_leadgen_gemini_key", key);
-      } else {
-        localStorage.removeItem("slovak_leadgen_gemini_key");
-      }
+      localStorage.setItem("slovak_leadgen_active_provider", provider);
     } catch (e) {
-      console.error("Failed to save key to localStorage", e);
+      console.error("Failed to save active provider to localStorage", e);
     }
+  };
+
+  const handleSaveProviderKey = (provider: AIProviderId, key: string) => {
+    setProviderKeys((prev) => {
+      const updated = { ...prev, [provider]: key };
+      try {
+        localStorage.setItem("slovak_leadgen_provider_keys", JSON.stringify(updated));
+        if (provider === "gemini") {
+          localStorage.setItem("slovak_leadgen_gemini_key", key);
+        }
+      } catch (e) {
+        console.error("Failed to save provider keys to localStorage", e);
+      }
+      return updated;
+    });
+  };
+
+  const handleSelectProviderModel = (provider: AIProviderId, model: string) => {
+    setProviderModels((prev) => {
+      const updated = { ...prev, [provider]: model };
+      try {
+        localStorage.setItem("slovak_leadgen_provider_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to save provider models to localStorage", e);
+      }
+      return updated;
+    });
   };
 
   // Save to localStorage when savedProspects changes
@@ -144,9 +238,14 @@ export default function App() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            ...(customApiKey ? { "x-gemini-api-key": customApiKey } : {}),
+            "x-ai-provider": activeProvider,
+            "x-ai-model": activeModel,
+            ...(activeApiKey ? { [`x-${activeProvider}-api-key`]: activeApiKey, "x-custom-api-key": activeApiKey } : {}),
           },
           body: JSON.stringify({
+            provider: activeProvider,
+            apiKey: activeApiKey || undefined,
+            model: activeModel,
             region: filters.region,
             industry: filters.industry,
             minEmployees: filters.minEmployees,
@@ -161,9 +260,9 @@ export default function App() {
           setProspects(data.prospects);
           if (data.isMock) {
             setStatusNotice(
-              customApiKey
+              activeApiKey
                 ? "Dáta sú pripravené z overenej databázy slovenských SMB subjektov."
-                : "Dáta sú pripravené z overenej databázy slovenských SMB subjektov. Pre neobmedzené živé Google Search vyhľadávanie kliknite vpravo hore na 'Nastaviť API kľúč'."
+                : `Dáta sú pripravené z overenej databázy slovenských SMB subjektov. Pre živé volanie cez ${currentProviderConfig.name} kliknite vpravo hore na tlačidlo providera.`
             );
           }
         }
@@ -175,7 +274,7 @@ export default function App() {
     };
 
     loadInitialLeads();
-  }, [customApiKey]);
+  }, []);
 
   // Execute Search (supports passing specific filters or using state)
   const executeSearch = async (overrideFilters?: SearchFilterState) => {
@@ -189,9 +288,14 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(customApiKey ? { "x-gemini-api-key": customApiKey } : {}),
+          "x-ai-provider": activeProvider,
+          "x-ai-model": activeModel,
+          ...(activeApiKey ? { [`x-${activeProvider}-api-key`]: activeApiKey, "x-custom-api-key": activeApiKey } : {}),
         },
         body: JSON.stringify({
+          provider: activeProvider,
+          apiKey: activeApiKey || undefined,
+          model: activeModel,
           region: activeFilters.region,
           industry: activeFilters.industry,
           minEmployees: activeFilters.minEmployees,
@@ -219,9 +323,9 @@ export default function App() {
 
         if (data.isMock) {
           setStatusNotice(
-            customApiKey
+            activeApiKey
               ? "Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi."
-              : "Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi. Pre živé vyhľadávanie priamo na webe môžete zadať vlastný kľúč cez 'Nastaviť API kľúč' v hornej lište."
+              : `Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi. Pre živé vyhľadávanie cez ${currentProviderConfig.name} môžete nastaviť kľúč v hornej lište.`
           );
         }
       } else {
@@ -253,9 +357,14 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(customApiKey ? { "x-gemini-api-key": customApiKey } : {}),
+          "x-ai-provider": activeProvider,
+          "x-ai-model": activeModel,
+          ...(activeApiKey ? { [`x-${activeProvider}-api-key`]: activeApiKey, "x-custom-api-key": activeApiKey } : {}),
         },
         body: JSON.stringify({
+          provider: activeProvider,
+          apiKey: activeApiKey || undefined,
+          model: activeModel,
           urlOrName,
           industry,
           language,
@@ -364,7 +473,9 @@ export default function App() {
         }}
         savedCount={savedProspects.length}
         onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
-        hasCustomKey={Boolean(customApiKey && customApiKey.trim().length > 5)}
+        hasCustomKey={Boolean(activeApiKey && activeApiKey.trim().length > 5)}
+        activeProviderName={currentProviderConfig.name}
+        activeModelName={activeModel}
       />
 
       {/* Main Container */}
@@ -543,14 +654,21 @@ export default function App() {
           setRefiningProspect(null);
         }}
         onSaveUpdatedPitch={handleSaveUpdatedPitch}
+        activeProvider={activeProvider}
+        activeApiKey={activeApiKey}
+        activeModel={activeModel}
       />
 
       {/* Modal for Custom API Key Settings */}
       <ApiKeyModal
         isOpen={isApiKeyModalOpen}
         onClose={() => setIsApiKeyModalOpen(false)}
-        currentGeminiKey={customApiKey}
-        onSaveGeminiKey={handleSaveGeminiKey}
+        activeProvider={activeProvider}
+        onSelectActiveProvider={handleSelectActiveProvider}
+        providerKeys={providerKeys}
+        onSaveProviderKey={handleSaveProviderKey}
+        providerModels={providerModels}
+        onSelectProviderModel={handleSelectProviderModel}
       />
     </div>
   );
