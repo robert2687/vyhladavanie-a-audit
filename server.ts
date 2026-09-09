@@ -74,6 +74,338 @@ function handleGeminiError(context: string, error: any) {
   }
 }
 
+export type AIProviderId =
+  | "gemini"
+  | "anthropic"
+  | "perplexity"
+  | "nemotron"
+  | "deepseek"
+  | "openai"
+  | "grok";
+
+export interface ProviderCallParams {
+  provider: AIProviderId;
+  apiKey?: string;
+  model?: string;
+  systemInstruction: string;
+  prompt: string;
+  jsonMode?: boolean;
+}
+
+export interface ProviderCallResult {
+  text: string;
+  groundingChunks?: any[];
+  provider: string;
+  model: string;
+}
+
+export function resolveProviderAndKey(req: express.Request): {
+  provider: AIProviderId;
+  apiKey?: string;
+  model?: string;
+} {
+  const rawProvider = (
+    (req.headers["x-ai-provider"] as string) ||
+    req.body?.provider ||
+    "gemini"
+  ).toLowerCase();
+
+  const provider: AIProviderId = [
+    "gemini",
+    "anthropic",
+    "perplexity",
+    "nemotron",
+    "deepseek",
+    "openai",
+    "grok",
+  ].includes(rawProvider)
+    ? (rawProvider as AIProviderId)
+    : "gemini";
+
+  const requestedModel =
+    (req.headers["x-ai-model"] as string) || req.body?.model;
+
+  // Check provider specific header first
+  let apiKey: string | undefined =
+    (req.headers[`x-${provider}-api-key`] as string) ||
+    (req.headers["x-custom-api-key"] as string) ||
+    (provider === "gemini" ? (req.headers["x-gemini-api-key"] as string) : undefined) ||
+    req.body?.customApiKey ||
+    req.body?.apiKey;
+
+  if (!apiKey || !apiKey.trim()) {
+    switch (provider) {
+      case "gemini":
+        apiKey = process.env.GEMINI_API_KEY;
+        break;
+      case "anthropic":
+        apiKey = process.env.ANTHROPIC_API_KEY;
+        break;
+      case "perplexity":
+        apiKey = process.env.PERPLEXITY_API_KEY;
+        break;
+      case "nemotron":
+        apiKey = process.env.NVIDIA_API_KEY;
+        break;
+      case "deepseek":
+        apiKey = process.env.DEEPSEEK_API_KEY;
+        break;
+      case "openai":
+        apiKey = process.env.OPENAI_API_KEY;
+        break;
+      case "grok":
+        apiKey = process.env.XAI_API_KEY;
+        break;
+    }
+  }
+
+  return {
+    provider,
+    apiKey: apiKey?.trim(),
+    model: requestedModel,
+  };
+}
+
+export async function callAIProvider(
+  params: ProviderCallParams
+): Promise<ProviderCallResult> {
+  const { provider, apiKey, model, systemInstruction, prompt, jsonMode } = params;
+
+  if (provider === "gemini") {
+    const ai = getGenAI(apiKey);
+    if (!ai) {
+      throw new Error("Google Gemini API kľúč nie je nastavený.");
+    }
+    const chosenModel = model || "gemini-3.8-flash";
+    const response = await ai.models.generateContent({
+      model: chosenModel,
+      contents: prompt,
+      config: {
+        systemInstruction,
+        tools: [{ googleSearch: {} }],
+        temperature: 0.2,
+      },
+    });
+    return {
+      text: response.text || "",
+      groundingChunks:
+        response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
+      provider: "gemini",
+      model: chosenModel,
+    };
+  }
+
+  if (!apiKey) {
+    throw new Error(
+      `API kľúč pre providera ${provider.toUpperCase()} nie je nastavený.`
+    );
+  }
+
+  // 1. Anthropic (Claude)
+  if (provider === "anthropic") {
+    const chosenModel = model || "claude-3-5-sonnet-20241022";
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        max_tokens: 4096,
+        system: systemInstruction,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+      }),
+    });
+
+    const data: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data?.error?.message || `Anthropic API error (${resp.status})`);
+    }
+
+    const text = data.content?.[0]?.text || "";
+    return {
+      text,
+      provider: "anthropic",
+      model: chosenModel,
+    };
+  }
+
+  // 2. Perplexity (Sonar with Live Web Search)
+  if (provider === "perplexity") {
+    const chosenModel = model || "sonar";
+    const resp = await fetch("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+      }),
+    });
+
+    const data: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data?.error?.message || `Perplexity API error (${resp.status})`);
+    }
+
+    const text = data.choices?.[0]?.message?.content || "";
+    const citations = Array.isArray(data.citations)
+      ? data.citations.map((url: string) => ({ web: { uri: url, title: url } }))
+      : [];
+
+    return {
+      text,
+      groundingChunks: citations,
+      provider: "perplexity",
+      model: chosenModel,
+    };
+  }
+
+  // 3. NVIDIA Nemotron (NVIDIA NIM)
+  if (provider === "nemotron") {
+    const chosenModel = model || "nvidia/llama-3.1-nemotron-70b-instruct";
+    const resp = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 4096,
+      }),
+    });
+
+    const data: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(
+        data?.error?.message || `NVIDIA Nemotron API error (${resp.status})`
+      );
+    }
+
+    const text = data.choices?.[0]?.message?.content || "";
+    return {
+      text,
+      provider: "nemotron",
+      model: chosenModel,
+    };
+  }
+
+  // 4. DeepSeek
+  if (provider === "deepseek") {
+    const chosenModel = model || "deepseek-chat";
+    const resp = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        response_format: jsonMode ? { type: "json_object" } : undefined,
+      }),
+    });
+
+    const data: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data?.error?.message || `DeepSeek API error (${resp.status})`);
+    }
+
+    const text = data.choices?.[0]?.message?.content || "";
+    return {
+      text,
+      provider: "deepseek",
+      model: chosenModel,
+    };
+  }
+
+  // 5. OpenAI
+  if (provider === "openai") {
+    const chosenModel = model || "gpt-4o";
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        response_format: jsonMode ? { type: "json_object" } : undefined,
+      }),
+    });
+
+    const data: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data?.error?.message || `OpenAI API error (${resp.status})`);
+    }
+
+    const text = data.choices?.[0]?.message?.content || "";
+    return {
+      text,
+      provider: "openai",
+      model: chosenModel,
+    };
+  }
+
+  // 6. xAI Grok
+  if (provider === "grok") {
+    const chosenModel = model || "grok-2-latest";
+    const resp = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+      }),
+    });
+
+    const data: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data?.error?.message || `xAI Grok API error (${resp.status})`);
+    }
+
+    const text = data.choices?.[0]?.message?.content || "";
+    return {
+      text,
+      provider: "grok",
+      model: chosenModel,
+    };
+  }
+
+  throw new Error(`Neznámy provider: ${provider}`);
+}
+
 export interface Prospect {
   id: string;
   companyName: string;
@@ -696,37 +1028,39 @@ function parseMarkdownProspects(
 
 // Search & Discover Prospects endpoint
 app.post("/api/leads/search", async (req, res) => {
+  const {
+    region = "Bratislavský kraj",
+    industry = "Stavebníctvo",
+    minEmployees = 3,
+    maxEmployees = 50,
+    count = 3,
+    customKeywords = "",
+    language = "sk",
+  } = req.body;
+
+  const { provider, apiKey, model } = resolveProviderAndKey(req);
+
+  // If gemini and no key and default key unavailable, or other provider with no key:
+  if ((provider === "gemini" && !getGenAI(apiKey)) || (provider !== "gemini" && !apiKey)) {
+    const generated = generateContextualSlovakLeads({
+      region,
+      industry,
+      minEmployees,
+      maxEmployees,
+      count,
+      customKeywords,
+      language,
+    });
+    return res.json({
+      success: true,
+      isMock: true,
+      provider,
+      message: `Vyhľadávanie bolo skompletizované cez overenú databázu slovenských SMB subjektov (provider ${provider.toUpperCase()}).`,
+      prospects: generated,
+    });
+  }
+
   try {
-    const {
-      region = "Bratislavský kraj",
-      industry = "Stavebníctvo",
-      minEmployees = 3,
-      maxEmployees = 50,
-      count = 3,
-      customKeywords = "",
-      language = "sk"
-    } = req.body;
-
-    const userCustomKey = (req.headers["x-gemini-api-key"] as string) || req.body?.customApiKey;
-    const ai = getGenAI(userCustomKey);
-    if (!ai) {
-      const generated = generateContextualSlovakLeads({
-        region,
-        industry,
-        minEmployees,
-        maxEmployees,
-        count,
-        customKeywords,
-        language
-      });
-      return res.json({
-        success: true,
-        isMock: true,
-        message: "Výsledky boli vygenerované cez lokálny auditný engine pre slovenský trh.",
-        prospects: generated
-      });
-    }
-
     const prompt = `Search and identify ${count} real small-to-medium sized companies (strictly 3 to 50 employees, NO large corporations or state enterprises) in the following location and sector:
 - Location / Region: ${region} (Slovakia)
 - Industry / Sector: ${industry}
@@ -767,26 +1101,23 @@ Please return the results matching the Universal System Instructions output sche
   }
 ]`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
-        tools: [{ googleSearch: {} }],
-        temperature: 0.2,
-      },
+    const aiResult = await callAIProvider({
+      provider,
+      apiKey,
+      model,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      prompt,
     });
 
-    const responseText = response.text || "";
+    const responseText = aiResult.text || "";
     let prospects = extractJsonFromText(responseText);
 
     if (!Array.isArray(prospects) || prospects.length === 0) {
-      // Try parsing from text following the Output Schema
       const parsedMarkdown = parseMarkdownProspects(responseText, industry, region, language);
       if (parsedMarkdown.length > 0) {
         prospects = parsedMarkdown;
       } else {
-        console.warn("AI returned non-JSON/non-markdown schema, using contextual engine.");
+        console.warn(`AI (${provider}) returned non-JSON/non-markdown schema, using contextual engine.`);
         prospects = generateContextualSlovakLeads({
           region,
           industry,
@@ -794,7 +1125,7 @@ Please return the results matching the Universal System Instructions output sche
           maxEmployees,
           count,
           customKeywords,
-          language
+          language,
         });
       }
     } else {
@@ -817,21 +1148,21 @@ Please return the results matching the Universal System Instructions output sche
           identifiedWebSignals: Array.isArray(p.identifiedWebSignals) ? p.identifiedWebSignals : [
             "Chýbajúci priamy dopytový formulár na webe",
             "Cenník služieb viazaný v statickom PDF",
-            "Absencia automatického potvrdenia dopytu klientovi"
+            "Absencia automatického potvrdenia dopytu klientovi",
           ],
           valueProposition: p.valueProposition || "Implementácia automatizovaného B2B formulára a instantných notifikácií.",
           coldOutreach: {
             subject: p.coldOutreach?.subject || `Zrýchlenie dopytov pre ${cleanName}`,
             body: p.coldOutreach?.body || `Dobrý deň,\n\nvšimol som si vaše služby na webe. Chýbajúci online dopytový formulár však spôsobuje zdržanie pri spracovaní zákaziek.\n\nRadi vám ukážeme riešenie, ktoré automaticky nacení zákazku a pošle notifikáciu. Mali by ste 10 minút na hovor?`,
-            language: language
+            language: language,
           },
           registers: {
             orsrUrl: ico ? `https://www.orsr.sk/hladaj_subjekt.asp?ICO=${ico}&R=on` : `https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=${encodedName}&PF=0&R=on`,
             finstatUrl: ico ? `https://finstat.sk/${ico}` : `https://finstat.sk/hladaj?query=${encodedName}`,
-            overitUrl: ico ? `https://overit.sk/ico/${ico}` : `https://overit.sk/hladaj?q=${encodedName}`
+            overitUrl: ico ? `https://overit.sk/ico/${ico}` : `https://overit.sk/hladaj?q=${encodedName}`,
           },
           auditTimestamp: new Date().toISOString(),
-          status: "new"
+          status: "new",
         };
       });
     }
@@ -839,10 +1170,14 @@ Please return the results matching the Universal System Instructions output sche
     res.json({
       success: true,
       prospects,
-      groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || []
+      provider: aiResult.provider,
+      model: aiResult.model,
+      groundingChunks: aiResult.groundingChunks || [],
     });
   } catch (error: any) {
-    handleGeminiError("/api/leads/search", error);
+    if (provider === "gemini") handleGeminiError("/api/leads/search", error);
+    else console.warn(`[Warning in /api/leads/search (${provider})]:`, error?.message || error);
+
     const fallbackList = generateContextualSlovakLeads({
       region: req.body.region,
       industry: req.body.industry,
@@ -850,13 +1185,14 @@ Please return the results matching the Universal System Instructions output sche
       maxEmployees: req.body.maxEmployees,
       count: req.body.count || 3,
       customKeywords: req.body.customKeywords,
-      language: req.body.language || "sk"
+      language: req.body.language || "sk",
     });
     res.json({
       success: true,
       isMock: true,
+      provider,
       prospects: fallbackList,
-      message: "Vyhľadávanie bolo skompletizované s overenou databázou slovenských SMB subjektov.",
+      message: `Vyhľadávanie bolo skompletizované s overenou databázou slovenských SMB subjektov (${error?.message ? error.message.slice(0, 100) : "lokálna báza"}).`,
     });
   }
 });
@@ -870,15 +1206,16 @@ app.post("/api/audit/company", async (req, res) => {
       return res.status(400).json({ success: false, error: "Zadajte URL alebo názov firmy / IČO" });
     }
 
-    const userCustomKey = (req.headers["x-gemini-api-key"] as string) || req.body?.customApiKey;
-    const ai = getGenAI(userCustomKey);
-    if (!ai) {
+    const { provider, apiKey, model } = resolveProviderAndKey(req);
+
+    if ((provider === "gemini" && !getGenAI(apiKey)) || (provider !== "gemini" && !apiKey)) {
       const sampleAudit = generateCompanyAuditFallback(urlOrName, industry, language);
       return res.json({
         success: true,
         isMock: true,
+        provider,
         prospect: sampleAudit,
-        message: "Audit bol vygenerovaný s overenou analýzou digitálnych bariér pre slovenský trh."
+        message: "Audit bol vygenerovaný s overenou analýzou digitálnych bariér pre slovenský trh.",
       });
     }
 
@@ -886,7 +1223,7 @@ app.post("/api/audit/company", async (req, res) => {
 Target company: "${urlOrName}"
 Industry/Sector: "${industry}"
 
-Perform a deep operational and web presence audit for this Slovak company using Google Search.
+Perform a deep operational and web presence audit for this Slovak company.
 Check their official website, ORSR.sk (Obchodný register SR), FinStat.sk, and Google profile.
 1. Company Name & IČO (Business ID in Slovakia)
 2. Exact Website URL
@@ -925,17 +1262,16 @@ Return ONLY a valid JSON object with this exact structure:
   }
 }`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: auditPrompt,
-      config: {
-        systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
-        tools: [{ googleSearch: {} }],
-        temperature: 0.2,
-      },
+    const aiResult = await callAIProvider({
+      provider,
+      apiKey,
+      model,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      prompt: auditPrompt,
+      jsonMode: true,
     });
 
-    const responseText = response.text || "";
+    const responseText = aiResult.text || "";
     let parsed = extractJsonFromText(responseText);
     if (!parsed) {
       const parsedList = parseMarkdownProspects(responseText, industry, "Slovensko", language);
@@ -985,10 +1321,12 @@ Return ONLY a valid JSON object with this exact structure:
     res.json({
       success: true,
       prospect,
-      groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || []
+      provider: aiResult.provider,
+      model: aiResult.model,
+      groundingChunks: aiResult.groundingChunks || []
     });
   } catch (error: any) {
-    handleGeminiError("/api/audit/company", error);
+    console.warn("[Warning in /api/audit/company]:", error?.message || error);
     const target = req.body.urlOrName || "Slovenská SMB Firma";
     const sampleAudit = generateCompanyAuditFallback(target, req.body.industry, req.body.language || "sk");
     res.json({
@@ -1014,10 +1352,9 @@ app.post("/api/leads/refine-pitch", async (req, res) => {
     } = req.body;
 
     const offer = customOffer || valueProposition;
+    const { provider, apiKey, model } = resolveProviderAndKey(req);
 
-    const userCustomKey = (req.headers["x-gemini-api-key"] as string) || req.body?.customApiKey;
-    const ai = getGenAI(userCustomKey);
-    if (!ai) {
+    if ((provider === "gemini" && !getGenAI(apiKey)) || (provider !== "gemini" && !apiKey)) {
       return res.json(generateRefinedPitchFallback(companyName, decisionMaker, offer, tone, language));
     }
 
@@ -1040,24 +1377,25 @@ Return JSON:
   "body": "..."
 }`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
-        responseMimeType: "application/json",
-        temperature: 0.3,
-      }
+    const aiResult = await callAIProvider({
+      provider,
+      apiKey,
+      model,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      prompt,
+      jsonMode: true,
     });
 
-    const parsed = extractJsonFromText(response.text || "");
+    const parsed = extractJsonFromText(aiResult.text || "");
     res.json({
       success: true,
       subject: parsed?.subject || `Dopyty a web pre ${companyName}`,
-      body: parsed?.body || "Dobrý deň..."
+      body: parsed?.body || "Dobrý deň...",
+      provider: aiResult.provider,
+      model: aiResult.model,
     });
   } catch (error: any) {
-    handleGeminiError("/api/leads/refine-pitch", error);
+    console.warn("[Warning in /api/leads/refine-pitch]:", error?.message || error);
     const cName = req.body.companyName || "Vaša spoločnosť";
     const dMaker = req.body.decisionMaker || "";
     const custom = req.body.customOffer || req.body.valueProposition || "nasadenie interaktívneho dopytového intake formulára";
@@ -1067,33 +1405,53 @@ Return JSON:
   }
 });
 
-// Endpoint to validate a custom Gemini API key
+// Endpoint to validate a custom API key for ANY provider
 app.post("/api/validate-key", async (req, res) => {
   try {
-    const key = ((req.headers["x-gemini-api-key"] as string) || req.body?.apiKey || "").trim();
-    if (!key) {
-      return res.status(400).json({ valid: false, message: "Nebol zadaný žiadny API kľúč." });
+    const rawProvider = (req.body?.provider || req.headers["x-ai-provider"] || "gemini").toLowerCase();
+    const provider: AIProviderId = [
+      "gemini",
+      "anthropic",
+      "perplexity",
+      "nemotron",
+      "deepseek",
+      "openai",
+      "grok",
+    ].includes(rawProvider)
+      ? (rawProvider as AIProviderId)
+      : "gemini";
+
+    const key = (
+      req.body?.apiKey ||
+      (req.headers[`x-${provider}-api-key`] as string) ||
+      (req.headers["x-gemini-api-key"] as string) ||
+      (req.headers["x-api-key"] as string) ||
+      ""
+    ).trim();
+
+    if (!key && provider !== "gemini") {
+      return res.status(400).json({
+        valid: false,
+        message: `Nebol zadaný žiadny API kľúč pre ${provider.toUpperCase()}.`,
+      });
     }
 
-    const testClient = new GoogleGenAI({
+    const testModel = req.body?.model;
+
+    const result = await callAIProvider({
+      provider,
       apiKey: key,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
+      model: testModel,
+      systemInstruction: "You are a connection validator. Answer strictly with the single word: OK",
+      prompt: "Respond with the word: OK",
     });
 
-    const result = await testClient.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: "Odpovedz len slovom: OK",
-    });
-
-    if (result.text) {
+    if (result.text && result.text.length > 0) {
       return res.json({
         valid: true,
-        message: "API kľúč je platný a úspešne otestovaný s modelom Gemini 3.8 Flash!",
-        model: "gemini-3.8-flash"
+        message: `API kľúč pre ${provider.toUpperCase()} (${result.model}) je platný a úspešne otestovaný!`,
+        provider,
+        model: result.model,
       });
     }
 
@@ -1103,19 +1461,25 @@ app.post("/api/validate-key", async (req, res) => {
     res.status(400).json({
       valid: false,
       message: errMsg.includes("leaked")
-        ? "Tento API kľúč bol nahlásený ako vyzradený (leaked). Použite prosím iný aktívny kľúč z Google AI Studio."
-        : errMsg.includes("API_KEY_INVALID")
-        ? "Neplatný formát API kľúča. Skontrolujte či je skopírovaný celý reťazec."
-        : `Chyba pri overení kľúča: ${errMsg.slice(0, 150)}`
+        ? "Tento API kľúč bol nahlásený ako vyzradený (leaked). Použite prosím iný aktívny kľúč."
+        : errMsg.includes("API_KEY_INVALID") || errMsg.includes("401")
+        ? "Neplatný API kľúč alebo chybné oprávnenia. Skontrolujte či je skopírovaný celý reťazec."
+        : `Chyba pri overení spojenia: ${errMsg.slice(0, 160)}`
     });
   }
 });
 
 // Endpoint to check status of environment vs custom key
 app.get("/api/key-status", (req, res) => {
-  const hasEnvKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5);
   res.json({
-    hasEnvKey,
+    gemini: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5),
+    anthropic: Boolean(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.length > 5),
+    perplexity: Boolean(process.env.PERPLEXITY_API_KEY && process.env.PERPLEXITY_API_KEY.length > 5),
+    nemotron: Boolean(process.env.NVIDIA_API_KEY && process.env.NVIDIA_API_KEY.length > 5),
+    deepseek: Boolean(process.env.DEEPSEEK_API_KEY && process.env.DEEPSEEK_API_KEY.length > 5),
+    openai: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.length > 5),
+    grok: Boolean(process.env.XAI_API_KEY && process.env.XAI_API_KEY.length > 5),
+    hasEnvKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5),
   });
 });
 
@@ -1130,27 +1494,37 @@ app.get("/api/system-instruction", (req, res) => {
 export const PYTHON_MULTI_PROVIDER_SCRIPT = `import os
 from openai import OpenAI
 
-# Configuration map for multiple providers
+# Configuration map for all supported providers
 PROVIDERS = {
-    "deepseek": {
-        "base_url": "https://api.deepseek.com",
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "default_model": "deepseek-chat" # or deepseek-reasoner
+    "perplexity": {
+        "base_url": "https://api.perplexity.ai",
+        "api_key_env": "PERPLEXITY_API_KEY",
+        "default_model": "sonar" # Native real-time web search
+    },
+    "anthropic": {
+        "base_url": "https://api.anthropic.com/v1",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "default_model": "claude-3-5-sonnet-20241022"
     },
     "nemotron": {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "api_key_env": "NVIDIA_API_KEY",
         "default_model": "nvidia/llama-3.1-nemotron-70b-instruct"
     },
-    "grok": {
-        "base_url": "https://api.x.ai/v1",
-        "api_key_env": "XAI_API_KEY",
-        "default_model": "grok-2-latest"
+    "deepseek": {
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "default_model": "deepseek-chat" # or deepseek-reasoner
     },
     "openai": {
         "base_url": "https://api.openai.com/v1",
         "api_key_env": "OPENAI_API_KEY",
         "default_model": "gpt-4o"
+    },
+    "grok": {
+        "base_url": "https://api.x.ai/v1",
+        "api_key_env": "XAI_API_KEY",
+        "default_model": "grok-2-latest"
     }
 }
 
@@ -1159,7 +1533,7 @@ SYSTEM_INSTRUCTION = """${UNIVERSAL_SYSTEM_INSTRUCTION}"""
 def run_lead_finder(provider_name: str, user_prompt: str):
     config = PROVIDERS.get(provider_name.lower())
     if not config:
-        raise ValueError(f"Provider {provider_name} not supported.")
+        raise ValueError(f"Provider {provider_name} not supported. Supported: {list(PROVIDERS.keys())}")
 
     api_key = os.getenv(config["api_key_env"])
     if not api_key:
@@ -1183,10 +1557,10 @@ def run_lead_finder(provider_name: str, user_prompt: str):
 
 # Example usage:
 if __name__ == "__main__":
-    # Target provider: "deepseek", "nemotron", "grok", or "openai"
-    provider = os.getenv("DEFAULT_PROVIDER", "deepseek")
-    query = "Find 5 accounting firms in Banská Bystrica with outdated websites."
-    print(f"Running Slovak SMB lead discovery via {provider}...")
+    # Choose: "perplexity", "anthropic", "nemotron", "deepseek", "openai", or "grok"
+    provider = os.getenv("DEFAULT_PROVIDER", "perplexity")
+    query = "Find 5 construction & engineering SMBs in Trnava or Nitra with outdated websites."
+    print(f"Running Slovak SMB lead discovery via {provider.upper()}...")
     try:
         results = run_lead_finder(provider, query)
         print("\\n--- Discovery Results ---\\n")

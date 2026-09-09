@@ -8,6 +8,8 @@ interface HeaderProps {
   savedCount: number;
   onOpenApiKeyModal: () => void;
   hasCustomKey: boolean;
+  activeProviderName?: string;
+  activeModelName?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,6 +18,8 @@ export const Header: React.FC<HeaderProps> = ({
   savedCount,
   onOpenApiKeyModal,
   hasCustomKey,
+  activeProviderName = "Google Gemini",
+  activeModelName,
 }) => {
   return (
     <>
@@ -116,27 +120,31 @@ export const Header: React.FC<HeaderProps> = ({
 
               <div className="h-6 w-px bg-stone-200 hidden md:block"></div>
 
-              {/* Custom API Key Settings Button */}
+              {/* Custom API Key & Provider Settings Button */}
               <button
                 id="open-api-key-modal-btn"
                 onClick={onOpenApiKeyModal}
                 className={`relative inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-semibold rounded-xl border transition-all min-h-[40px] sm:min-h-[42px] touch-manipulation ${
                   hasCustomKey
-                    ? "bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+                    ? "bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100"
                     : "bg-white text-stone-700 border-stone-200 hover:bg-stone-50 hover:text-stone-900 shadow-2xs"
                 }`}
-                title="Nastavenia vlastného API kľúča (Gemini / Multi-Provider)"
+                title={`AI Provider: ${activeProviderName} (Kliknite pre zmenu providera alebo API kľúčov)`}
               >
-                <Key className={`w-4 h-4 ${hasCustomKey ? "text-emerald-600" : "text-stone-500"}`} />
-                <span className="hidden sm:inline">
-                  {hasCustomKey ? "API Kľúč aktívny" : "Nastaviť API kľúč"}
-                </span>
-                <span className="sm:hidden text-[11px]">
-                  {hasCustomKey ? "Kľúč aktívny" : "API Kľúč"}
-                </span>
-                {hasCustomKey && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
-                )}
+                <Key className={`w-4 h-4 shrink-0 ${hasCustomKey ? "text-emerald-600" : "text-stone-500"}`} />
+                <div className="text-left leading-tight">
+                  <div className="flex items-center gap-1">
+                    <span className="font-bold text-stone-900">
+                      {activeProviderName}
+                    </span>
+                    {hasCustomKey && (
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-stone-500 hidden sm:block">
+                    {hasCustomKey ? "Vlastný kľúč aktívny" : "Zmeniť providera / kľúč"}
+                  </span>
+                </div>
               </button>
             </div>
           </div>

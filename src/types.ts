@@ -53,3 +53,32 @@ export interface SearchHistoryItem {
 }
 
 export type TabType = "discover" | "audit" | "pipeline" | "guide";
+
+export type AIProviderId =
+  | "gemini"
+  | "anthropic"
+  | "perplexity"
+  | "nemotron"
+  | "deepseek"
+  | "openai"
+  | "grok";
+
+export interface AIProviderConfig {
+  id: AIProviderId;
+  name: string;
+  company: string;
+  defaultModel: string;
+  models: string[];
+  description: string;
+  keyPlaceholder: string;
+  keyEnvName: string;
+  getKeyUrl: string;
+  badgeText: string;
+  supportsWebSearch: boolean;
+}
+
+export interface AIProviderSettings {
+  activeProvider: AIProviderId;
+  selectedModels: Partial<Record<AIProviderId, string>>;
+  keys: Partial<Record<AIProviderId, string>>;
+}
