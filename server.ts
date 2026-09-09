@@ -75,6 +75,7 @@ function handleGeminiError(context: string, error: any) {
 }
 
 export type AIProviderId =
+  | "openrouter"
   | "gemini"
   | "anthropic"
   | "perplexity"
@@ -111,6 +112,7 @@ export function resolveProviderAndKey(req: express.Request): {
   ).toLowerCase();
 
   const provider: AIProviderId = [
+    "openrouter",
     "gemini",
     "anthropic",
     "perplexity",
@@ -135,6 +137,9 @@ export function resolveProviderAndKey(req: express.Request): {
 
   if (!apiKey || !apiKey.trim()) {
     switch (provider) {
+      case "openrouter":
+        apiKey = process.env.OPENROUTER_API_KEY;
+        break;
       case "gemini":
         apiKey = process.env.GEMINI_API_KEY;
         break;
@@ -199,6 +204,41 @@ export async function callAIProvider(
     throw new Error(
       `API kľúč pre providera ${provider.toUpperCase()} nie je nastavený.`
     );
+  }
+
+  // 0. OpenRouter
+  if (provider === "openrouter") {
+    const chosenModel = model || "openrouter/auto";
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://github.com/aistudio-build",
+        "X-Title": "Slovak B2B Lead Generator",
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        response_format: jsonMode ? { type: "json_object" } : undefined,
+      }),
+    });
+
+    const data: any = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data?.error?.message || `OpenRouter API error (${resp.status})`);
+    }
+
+    const text = data.choices?.[0]?.message?.content || "";
+    return {
+      text,
+      provider: "openrouter",
+      model: chosenModel,
+    };
   }
 
   // 1. Anthropic (Claude)
@@ -1472,6 +1512,7 @@ app.post("/api/validate-key", async (req, res) => {
 // Endpoint to check status of environment vs custom key
 app.get("/api/key-status", (req, res) => {
   res.json({
+    openrouter: Boolean(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY.length > 5),
     gemini: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5),
     anthropic: Boolean(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.length > 5),
     perplexity: Boolean(process.env.PERPLEXITY_API_KEY && process.env.PERPLEXITY_API_KEY.length > 5),

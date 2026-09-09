@@ -103,27 +103,118 @@ export default function App() {
     }
   };
 
-  // Custom API Key State
-  const [customApiKey, setCustomApiKey] = useState<string>(() => {
+  // AI Provider & Multi-Key Settings State
+  const [activeProvider, setActiveProvider] = useState<import("./types").AIProviderId>(() => {
     try {
-      return localStorage.getItem("slovak_leadgen_gemini_key") || "";
+      return (localStorage.getItem("slovak_leadgen_active_provider") as import("./types").AIProviderId) || "gemini";
     } catch {
-      return "";
+      return "gemini";
     }
   });
+
+  const [providerKeys, setProviderKeys] = useState<Record<import("./types").AIProviderId, string>>(() => {
+    try {
+      const stored = localStorage.getItem("slovak_leadgen_provider_keys");
+      const legacyGeminiKey = localStorage.getItem("slovak_leadgen_gemini_key") || "";
+      const parsed = stored ? JSON.parse(stored) : {};
+      return {
+        openrouter: "",
+        gemini: legacyGeminiKey,
+        anthropic: "",
+        perplexity: "",
+        nemotron: "",
+        deepseek: "",
+        openai: "",
+        grok: "",
+        ...parsed,
+      };
+    } catch {
+      return {
+        openrouter: "",
+        gemini: "",
+        anthropic: "",
+        perplexity: "",
+        nemotron: "",
+        deepseek: "",
+        openai: "",
+        grok: "",
+      };
+    }
+  });
+
+  const [providerModels, setProviderModels] = useState<Record<import("./types").AIProviderId, string>>(() => {
+    try {
+      const stored = localStorage.getItem("slovak_leadgen_provider_models");
+      return stored
+        ? JSON.parse(stored)
+        : {
+            openrouter: "openrouter/auto",
+            gemini: "gemini-3.8-flash",
+            anthropic: "claude-3-5-sonnet-20241022",
+            perplexity: "sonar",
+            nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",
+            deepseek: "deepseek-chat",
+            openai: "gpt-4o",
+            grok: "grok-2-latest",
+          };
+    } catch {
+      return {
+        openrouter: "openrouter/auto",
+        gemini: "gemini-3.8-flash",
+        anthropic: "claude-3-5-sonnet-20241022",
+        perplexity: "sonar",
+        nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",
+        deepseek: "deepseek-chat",
+        openai: "gpt-4o",
+        grok: "grok-2-latest",
+      };
+    }
+  });
+
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
 
-  const handleSaveGeminiKey = (key: string) => {
-    setCustomApiKey(key);
+  const handleSelectActiveProvider = (prov: import("./types").AIProviderId) => {
+    setActiveProvider(prov);
     try {
-      if (key) {
-        localStorage.setItem("slovak_leadgen_gemini_key", key);
-      } else {
-        localStorage.removeItem("slovak_leadgen_gemini_key");
-      }
+      localStorage.setItem("slovak_leadgen_active_provider", prov);
     } catch (e) {
-      console.error("Failed to save key to localStorage", e);
+      console.error("Failed to save active provider", e);
     }
+  };
+
+  const handleSaveProviderKey = (prov: import("./types").AIProviderId, key: string) => {
+    setProviderKeys((prev) => {
+      const updated = { ...prev, [prov]: key };
+      try {
+        localStorage.setItem("slovak_leadgen_provider_keys", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to save provider keys", e);
+      }
+      return updated;
+    });
+  };
+
+  const handleSelectProviderModel = (prov: import("./types").AIProviderId, model: string) => {
+    setProviderModels((prev) => {
+      const updated = { ...prev, [prov]: model };
+      try {
+        localStorage.setItem("slovak_leadgen_provider_models", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Failed to save provider models", e);
+      }
+      return updated;
+    });
+  };
+
+  const getProviderHeaders = () => {
+    const key = providerKeys[activeProvider] || "";
+    const model = providerModels[activeProvider] || "";
+    return {
+      "x-ai-provider": activeProvider,
+      "x-ai-model": model,
+      [`x-${activeProvider}-api-key`]: key,
+      ...(activeProvider === "gemini" && key ? { "x-gemini-api-key": key } : {}),
+    };
   };
 
   // Save to localStorage when savedProspects changes
@@ -144,7 +235,7 @@ export default function App() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            ...(customApiKey ? { "x-gemini-api-key": customApiKey } : {}),
+            ...getProviderHeaders(),
           },
           body: JSON.stringify({
             region: filters.region,
@@ -161,9 +252,9 @@ export default function App() {
           setProspects(data.prospects);
           if (data.isMock) {
             setStatusNotice(
-              customApiKey
+              providerKeys[activeProvider]
                 ? "Dáta sú pripravené z overenej databázy slovenských SMB subjektov."
-                : "Dáta sú pripravené z overenej databázy slovenských SMB subjektov. Pre neobmedzené živé Google Search vyhľadávanie kliknite vpravo hore na 'Nastaviť API kľúč'."
+                : "Dáta sú pripravené z overenej databázy slovenských SMB subjektov. Pre živé hľadanie cez AI model kliknite vpravo hore na 'Výber AI Providera'."
             );
           }
         }
@@ -175,7 +266,7 @@ export default function App() {
     };
 
     loadInitialLeads();
-  }, [customApiKey]);
+  }, [activeProvider, providerKeys[activeProvider]]);
 
   // Execute Search (supports passing specific filters or using state)
   const executeSearch = async (overrideFilters?: SearchFilterState) => {
@@ -189,7 +280,7 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(customApiKey ? { "x-gemini-api-key": customApiKey } : {}),
+          ...getProviderHeaders(),
         },
         body: JSON.stringify({
           region: activeFilters.region,
@@ -219,9 +310,9 @@ export default function App() {
 
         if (data.isMock) {
           setStatusNotice(
-            customApiKey
+            providerKeys[activeProvider]
               ? "Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi."
-              : "Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi. Pre živé vyhľadávanie priamo na webe môžete zadať vlastný kľúč cez 'Nastaviť API kľúč' v hornej lište."
+              : "Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi. Pre živé vyhľadávanie cez AI môžete nastaviť kľúč v hornej lište."
           );
         }
       } else {
@@ -253,7 +344,7 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(customApiKey ? { "x-gemini-api-key": customApiKey } : {}),
+          ...getProviderHeaders(),
         },
         body: JSON.stringify({
           urlOrName,
@@ -364,7 +455,9 @@ export default function App() {
         }}
         savedCount={savedProspects.length}
         onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
-        hasCustomKey={Boolean(customApiKey && customApiKey.trim().length > 5)}
+        hasCustomKey={Boolean(providerKeys[activeProvider]?.trim()?.length > 5)}
+        activeProviderName={activeProvider === "openrouter" ? "OpenRouter" : activeProvider === "gemini" ? "Google Gemini" : activeProvider === "anthropic" ? "Anthropic Claude" : activeProvider === "perplexity" ? "Perplexity Sonar" : activeProvider === "nemotron" ? "NVIDIA Nemotron" : activeProvider === "deepseek" ? "DeepSeek" : activeProvider === "openai" ? "OpenAI" : "xAI Grok"}
+        activeModelName={providerModels[activeProvider]}
       />
 
       {/* Main Container */}
@@ -549,8 +642,12 @@ export default function App() {
       <ApiKeyModal
         isOpen={isApiKeyModalOpen}
         onClose={() => setIsApiKeyModalOpen(false)}
-        currentGeminiKey={customApiKey}
-        onSaveGeminiKey={handleSaveGeminiKey}
+        activeProvider={activeProvider}
+        onSelectActiveProvider={handleSelectActiveProvider}
+        providerKeys={providerKeys}
+        onSaveProviderKey={handleSaveProviderKey}
+        providerModels={providerModels}
+        onSelectProviderModel={handleSelectProviderModel}
       />
     </div>
   );

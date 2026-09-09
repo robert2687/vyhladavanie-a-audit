@@ -44,6 +44,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   const [localKeys, setLocalKeys] = useState<Record<AIProviderId, string>>(providerKeys);
   const [localModels, setLocalModels] = useState<Record<AIProviderId, string>>(providerModels);
   const [showKey, setShowKey] = useState<Record<AIProviderId, boolean>>({
+    openrouter: false,
     gemini: false,
     anthropic: false,
     perplexity: false,
@@ -57,6 +58,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   const [testResults, setTestResults] = useState<
     Record<AIProviderId, { success: boolean; message: string } | null>
   >({
+    openrouter: null,
     gemini: null,
     anthropic: null,
     perplexity: null,
@@ -200,7 +202,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
     // Save all keys in state
     Object.entries(localKeys).forEach(([prov, k]) => {
-      onSaveProviderKey(prov as AIProviderId, (k || "").trim());
+      onSaveProviderKey(prov as AIProviderId, (typeof k === "string" ? k : "").trim());
     });
 
     onClose();
@@ -224,11 +226,11 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                   Výber a nastavenie AI Providerov
                 </h3>
                 <span className="text-[10px] font-semibold bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-full">
-                  7 Providerov
+                  8 Providerov
                 </span>
               </div>
               <p className="text-[11px] sm:text-xs text-stone-500">
-                Podpora pre Anthropic, Perplexity, NVIDIA Nemotron, DeepSeek, OpenAI, Grok & Gemini
+                Podpora pre OpenRouter, Anthropic, Perplexity, NVIDIA Nemotron, DeepSeek, OpenAI, Grok & Gemini
               </p>
             </div>
           </div>

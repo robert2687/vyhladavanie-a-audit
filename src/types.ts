@@ -55,6 +55,7 @@ export interface SearchHistoryItem {
 export type TabType = "discover" | "audit" | "pipeline" | "guide";
 
 export type AIProviderId =
+  | "openrouter"
   | "gemini"
   | "anthropic"
   | "perplexity"

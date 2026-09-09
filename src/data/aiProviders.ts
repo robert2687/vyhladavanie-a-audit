@@ -2,6 +2,26 @@ import { AIProviderConfig, AIProviderId } from "../types";
 
 export const AI_PROVIDERS: AIProviderConfig[] = [
   {
+    id: "openrouter",
+    name: "OpenRouter",
+    company: "OpenRouter AI",
+    defaultModel: "openrouter/auto",
+    models: [
+      "openrouter/auto",
+      "anthropic/claude-3.5-sonnet",
+      "google/gemini-2.5-flash",
+      "deepseek/deepseek-r1",
+      "openai/gpt-4o-mini",
+      "meta-llama/llama-3.3-70b-instruct"
+    ],
+    description: "Univerzálna AI brána k 200+ AI modelom (Claude, GPT-4o, Gemini, DeepSeek, Llama) s jediným API kľúčom.",
+    keyPlaceholder: "sk-or-v1-...",
+    keyEnvName: "OPENROUTER_API_KEY",
+    getKeyUrl: "https://openrouter.ai/keys",
+    badgeText: "200+ Modelov cez 1 Kľúč",
+    supportsWebSearch: true,
+  },
+  {
     id: "gemini",
     name: "Google Gemini",
     company: "Google DeepMind",
