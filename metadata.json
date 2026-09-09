@@ -1,0 +1,7 @@
+{
+  "name": "Slovak B2B Lead Generator & Web Audit",
+  "description": "B2B Lead Generation & Web Audit Assistant tailored for Slovak SMBs (3–50 employees), identifying digital gaps, ORSR/FinStat data, and cold outreach drafts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
