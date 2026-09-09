@@ -164,7 +164,11 @@ export default function App() {
       AI_PROVIDERS.forEach((p) => {
         if (!defaults[p.id]) defaults[p.id] = p.defaultModel;
       });
-      return { ...defaults, ...parsed };
+      const models = { ...defaults, ...parsed };
+      AI_PROVIDERS.forEach((p) => {
+        if (!p.models.includes(models[p.id])) models[p.id] = p.defaultModel;
+      });
+      return models;
     } catch {
       return {
         gemini: "gemini-2.5-flash",
