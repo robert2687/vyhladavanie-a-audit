@@ -166,6 +166,26 @@ export function resolveProviderAndKey(req: express.Request): {
   };
 }
 
+async function fetchJsonSafely(url: string, options: RequestInit): Promise<any> {
+  const resp = await fetch(url, options);
+  const text = await resp.text();
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    const preview = text.trim().slice(0, 120);
+    throw new Error(`Provider API returned non-JSON response (status ${resp.status}): ${preview}`);
+  }
+  if (!resp.ok) {
+    throw new Error(
+      data?.error?.message ||
+        data?.message ||
+        `Provider API error (${resp.status}): ${JSON.stringify(data).slice(0, 150)}`
+    );
+  }
+  return data;
+}
+
 export async function callAIProvider(
   params: ProviderCallParams
 ): Promise<ProviderCallResult> {
@@ -204,7 +224,7 @@ export async function callAIProvider(
   // 1. Anthropic (Claude)
   if (provider === "anthropic") {
     const chosenModel = model || "claude-3-5-sonnet-20241022";
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    const data: any = await fetchJsonSafely("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -220,11 +240,6 @@ export async function callAIProvider(
       }),
     });
 
-    const data: any = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data?.error?.message || `Anthropic API error (${resp.status})`);
-    }
-
     const text = data.content?.[0]?.text || "";
     return {
       text,
@@ -236,7 +251,7 @@ export async function callAIProvider(
   // 2. Perplexity (Sonar with Live Web Search)
   if (provider === "perplexity") {
     const chosenModel = model || "sonar";
-    const resp = await fetch("https://api.perplexity.ai/chat/completions", {
+    const data: any = await fetchJsonSafely("https://api.perplexity.ai/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -251,11 +266,6 @@ export async function callAIProvider(
         temperature: 0.2,
       }),
     });
-
-    const data: any = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data?.error?.message || `Perplexity API error (${resp.status})`);
-    }
 
     const text = data.choices?.[0]?.message?.content || "";
     const citations = Array.isArray(data.citations)
@@ -273,7 +283,7 @@ export async function callAIProvider(
   // 3. NVIDIA Nemotron (NVIDIA NIM)
   if (provider === "nemotron") {
     const chosenModel = model || "nvidia/llama-3.1-nemotron-70b-instruct";
-    const resp = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+    const data: any = await fetchJsonSafely("https://integrate.api.nvidia.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -290,13 +300,6 @@ export async function callAIProvider(
       }),
     });
 
-    const data: any = await resp.json();
-    if (!resp.ok) {
-      throw new Error(
-        data?.error?.message || `NVIDIA Nemotron API error (${resp.status})`
-      );
-    }
-
     const text = data.choices?.[0]?.message?.content || "";
     return {
       text,
@@ -308,7 +311,7 @@ export async function callAIProvider(
   // 4. DeepSeek
   if (provider === "deepseek") {
     const chosenModel = model || "deepseek-chat";
-    const resp = await fetch("https://api.deepseek.com/chat/completions", {
+    const data: any = await fetchJsonSafely("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -324,11 +327,6 @@ export async function callAIProvider(
         response_format: jsonMode ? { type: "json_object" } : undefined,
       }),
     });
-
-    const data: any = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data?.error?.message || `DeepSeek API error (${resp.status})`);
-    }
 
     const text = data.choices?.[0]?.message?.content || "";
     return {
@@ -341,7 +339,7 @@ export async function callAIProvider(
   // 5. OpenAI
   if (provider === "openai") {
     const chosenModel = model || "gpt-4o";
-    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    const data: any = await fetchJsonSafely("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -358,11 +356,6 @@ export async function callAIProvider(
       }),
     });
 
-    const data: any = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data?.error?.message || `OpenAI API error (${resp.status})`);
-    }
-
     const text = data.choices?.[0]?.message?.content || "";
     return {
       text,
@@ -374,7 +367,7 @@ export async function callAIProvider(
   // 6. xAI Grok
   if (provider === "grok") {
     const chosenModel = model || "grok-2-latest";
-    const resp = await fetch("https://api.x.ai/v1/chat/completions", {
+    const data: any = await fetchJsonSafely("https://api.x.ai/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -389,11 +382,6 @@ export async function callAIProvider(
         temperature: 0.2,
       }),
     });
-
-    const data: any = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data?.error?.message || `xAI Grok API error (${resp.status})`);
-    }
 
     const text = data.choices?.[0]?.message?.content || "";
     return {

@@ -11,6 +11,7 @@ import { SearchHistory } from "./components/SearchHistory";
 import { Prospect, SearchFilterState, SearchHistoryItem, TabType, AIProviderId } from "./types";
 import { SLOVAK_INDUSTRIES, SLOVAK_REGIONS } from "./data/slovakData";
 import { AI_PROVIDERS, DEFAULT_AI_PROVIDER } from "./data/aiProviders";
+import { safeFetchJson } from "./utils/api";
 import {
   Sparkles,
   Building2,
@@ -234,7 +235,11 @@ export default function App() {
     const loadInitialLeads = async () => {
       setIsLoading(true);
       try {
-        const response = await fetch("/api/leads/search", {
+        const data = await safeFetchJson<{
+          success?: boolean;
+          isMock?: boolean;
+          prospects?: Prospect[];
+        }>("/api/leads/search", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -255,7 +260,6 @@ export default function App() {
           }),
         });
 
-        const data = await response.json();
         if (data.success && Array.isArray(data.prospects)) {
           setProspects(data.prospects);
           if (data.isMock) {
@@ -284,7 +288,12 @@ export default function App() {
     setStatusNotice(null);
 
     try {
-      const response = await fetch("/api/leads/search", {
+      const data = await safeFetchJson<{
+        success?: boolean;
+        error?: string;
+        isMock?: boolean;
+        prospects?: Prospect[];
+      }>("/api/leads/search", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -306,7 +315,6 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
       if (data.success && Array.isArray(data.prospects)) {
         setProspects(data.prospects);
 
@@ -353,7 +361,11 @@ export default function App() {
     setStatusNotice(null);
 
     try {
-      const response = await fetch("/api/audit/company", {
+      const data = await safeFetchJson<{
+        success?: boolean;
+        error?: string;
+        prospect?: Prospect;
+      }>("/api/audit/company", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -371,7 +383,6 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
       if (data.success && data.prospect) {
         // Prepend audit result to the top of prospects list and switch to discover/results view
         setProspects((prev) => [data.prospect, ...prev.filter((p) => p.id !== data.prospect.id)]);

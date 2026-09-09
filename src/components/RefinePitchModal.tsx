@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Sparkles, Copy, Check, Sliders, Mail } from "lucide-react";
 import { Prospect, AIProviderId } from "../types";
+import { safeFetchJson } from "../utils/api";
 
 interface RefinePitchModalProps {
   prospect: Prospect | null;
@@ -36,7 +37,11 @@ export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
   const handleRegenerate = async () => {
     setIsGenerating(true);
     try {
-      const res = await fetch("/api/leads/refine-pitch", {
+      const data = await safeFetchJson<{
+        success?: boolean;
+        subject?: string;
+        body?: string;
+      }>("/api/leads/refine-pitch", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -58,8 +63,7 @@ export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
         }),
       });
 
-      const data = await res.json();
-      if (data.success) {
+      if (data.success && data.subject && data.body) {
         setSubject(data.subject);
         setBody(data.body);
       }

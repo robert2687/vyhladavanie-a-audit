@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { AIProviderId, AIProviderConfig } from "../types";
 import { AI_PROVIDERS } from "../data/aiProviders";
+import { safeFetchJson } from "../utils/api";
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -145,7 +146,10 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     }));
 
     try {
-      const response = await fetch("/api/validate-key", {
+      const data = await safeFetchJson<{
+        valid?: boolean;
+        message?: string;
+      }>("/api/validate-key", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -159,8 +163,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         }),
       });
 
-      const data = await response.json();
-      if (response.ok && data.valid) {
+      if (data.valid) {
         setTestResults((prev) => ({
           ...prev,
           [selectedTabProvider]: {
