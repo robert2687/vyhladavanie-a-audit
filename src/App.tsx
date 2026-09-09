@@ -153,7 +153,7 @@ export default function App() {
       const saved = localStorage.getItem("slovak_leadgen_provider_models");
       const parsed = saved ? JSON.parse(saved) : {};
       const defaults: Record<AIProviderId, string> = {
-        gemini: "gemini-3.8-flash",
+        gemini: "gemini-2.5-flash",
         anthropic: "claude-3-5-sonnet-20241022",
         perplexity: "sonar",
         nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",
@@ -167,7 +167,7 @@ export default function App() {
       return { ...defaults, ...parsed };
     } catch {
       return {
-        gemini: "gemini-3.8-flash",
+        gemini: "gemini-2.5-flash",
         anthropic: "claude-3-5-sonnet-20241022",
         perplexity: "sonar",
         nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",

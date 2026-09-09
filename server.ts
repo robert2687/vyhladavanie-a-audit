@@ -196,7 +196,7 @@ export async function callAIProvider(
     if (!ai) {
       throw new Error("Google Gemini API kľúč nie je nastavený.");
     }
-    const chosenModel = model || "gemini-3.8-flash";
+    const chosenModel = model || "gemini-2.5-flash";
     const response = await ai.models.generateContent({
       model: chosenModel,
       contents: prompt,
