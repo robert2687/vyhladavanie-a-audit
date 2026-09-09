@@ -48,9 +48,10 @@ export const AI_PROVIDERS: AIProviderConfig[] = [
     id: "nemotron",
     name: "NVIDIA Nemotron",
     company: "NVIDIA NIM",
-    defaultModel: "nvidia/llama-3.1-nemotron-70b-instruct",
+    defaultModel: "nvidia/nemotron-3.5-lightning-30b-a3b",
     models: [
       "NVIDIABuild-Autogen-33",
+      "nvidia/nemotron-3.5-lightning-30b-a3b",
       "nvidia/llama-3.1-nemotron-70b-instruct",
       "meta/llama-3.3-70b-instruct",
     ],
