@@ -107,10 +107,10 @@ export default function App() {
   // AI Provider & Key State
   const [activeProvider, setActiveProvider] = useState<AIProviderId>(() => {
     try {
-      return (
-        (localStorage.getItem("slovak_leadgen_active_provider") as AIProviderId) ||
-        DEFAULT_AI_PROVIDER
-      );
+      const storedProvider = localStorage.getItem("slovak_leadgen_active_provider");
+      return storedProvider && AI_PROVIDERS.some((p) => p.id === storedProvider)
+        ? (storedProvider as AIProviderId)
+        : DEFAULT_AI_PROVIDER;
     } catch {
       return DEFAULT_AI_PROVIDER;
     }
