@@ -274,7 +274,7 @@ export default function App() {
     };
 
     loadInitialLeads();
-  }, [activeProvider, activeApiKey, activeModel]);
+  }, []);
 
   // Execute Search (supports passing specific filters or using state)
   const executeSearch = async (overrideFilters?: SearchFilterState) => {
