@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -1609,13 +1608,14 @@ app.get("/api/export/python-script", (req, res) => {
 
 // Start server with Vite middleware in dev or static files in production
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -1623,9 +1623,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
-  });
+  if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
+    });
+  }
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
