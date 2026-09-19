@@ -362,11 +362,9 @@ export async function callAIProvider(
         "content-type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(bodyPayload),
       body: JSON.stringify({
-        model: chosenModel,
+        ...bodyPayload,
         messages,
-        temperature: 0.2,
         response_format: jsonMode ? { type: "json_object" } : undefined,
       }),
     });
