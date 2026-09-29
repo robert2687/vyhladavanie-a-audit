@@ -2130,6 +2130,7 @@ if (!process.env.VERCEL) {
   startServer();
 }
 
+if (process.env.NODE_ENV !== "test") {
 export default app;
 // Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
 if (!process.env.VERCEL) {
