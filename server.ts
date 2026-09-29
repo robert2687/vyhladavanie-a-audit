@@ -1645,7 +1645,11 @@ async function startServer() {
   if (isLocalDevelopment) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // The preview proxy does not forward Vite's HMR WebSocket.
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
