@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+/* Long translated labels and company details must not force a wider page. */
+html, body, #root { min-width: 0; }
+button, input, select, textarea { max-width: 100%; }
+main > *, footer > *, header > * { min-width: 0; }
+main p, main h3, main h4, footer span { overflow-wrap: anywhere; }
+button { transition: background-color .15s, color .15s, border-color .15s; }
+button:focus-visible, a:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+@media (max-width: 639px) {
+  header h1 { white-space: normal; }
+  footer > div > div { flex-wrap: wrap; }
+}
