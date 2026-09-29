@@ -1,5 +1,6 @@
 export interface Prospect {
   id: string;
+  isMock?: boolean;
   companyName: string;
   ico?: string;
   website: string;

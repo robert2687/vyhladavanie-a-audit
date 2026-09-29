@@ -13,6 +13,7 @@ export interface AuthUser {
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
+  authError: string | null;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   loginWithGoogle: () => void;
@@ -24,14 +25,16 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const processedHash = useRef(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  // Share one bootstrap promise across StrictMode effects; never race /me against OAuth.
+  const bootstrapRequest = useRef<Promise<AuthUser | null> | null>(null);
 
   useEffect(() => {
-    const bootstrap = async () => {
+    let active = true;
+    const bootstrap = async (): Promise<AuthUser | null> => {
       // 1) Returning from Google OAuth: exchange session_id (in URL fragment) first.
       const hash = window.location.hash || "";
-      if (hash.includes("session_id=") && !processedHash.current) {
-        processedHash.current = true;
+      if (hash.includes("session_id=")) {
         const sessionId = new URLSearchParams(hash.replace(/^#/, "")).get("session_id");
         try {
           const data = await safeFetchJson<{ success?: boolean; user?: AuthUser }>(
@@ -42,9 +45,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               body: JSON.stringify({ session_id: sessionId }),
             }
           );
-          if (data.user) setUser(data.user);
-        } catch {
-          // ignore; will fall back to /me
+          if (!data.user) throw new Error('Google prihlásenie zlyhalo.');
+          return data.user;
+        } catch (error: any) {
+          setAuthError(error.message || 'Google prihlásenie zlyhalo.');
+          return null;
         } finally {
           // Clean the fragment so it isn't reused.
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
@@ -54,17 +59,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // 2) Verify any existing session server-side.
       try {
         const me = await safeFetchJson<AuthUser>("/api/auth/me");
-        if (me && me.user_id) setUser(me);
+        return me?.user_id ? me : null;
       } catch {
-        setUser((prev) => prev); // keep whatever google exchange set (or null)
-      } finally {
-        setLoading(false);
+        return null;
       }
     };
-    bootstrap();
+    if (!bootstrapRequest.current) bootstrapRequest.current = bootstrap();
+    bootstrapRequest.current.then(result => {
+      if (active) { setUser(result); setLoading(false); }
+    });
+    return () => { active = false; };
   }, []);
 
   const login = async (email: string, password: string) => {
+    setAuthError(null);
     const data = await safeFetchJson<{ user: AuthUser }>("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -74,6 +82,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const register = async (name: string, email: string, password: string) => {
+    setAuthError(null);
     const data = await safeFetchJson<{ user: AuthUser }>("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -98,7 +107,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, loginWithGoogle, logout }}>
+    <AuthContext.Provider value={{ user, loading, authError, login, register, loginWithGoogle, logout }}>
       {children}
     </AuthContext.Provider>
   );

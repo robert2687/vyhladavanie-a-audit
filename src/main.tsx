@@ -5,6 +5,7 @@ import {Login} from './components/Login.tsx';
 import {AuthProvider, useAuth} from './context/AuthContext.tsx';
 import {Building2} from 'lucide-react';
 import './index.css';
+import { LanguageProvider } from './context/LanguageContext';
 
 function Splash() {
   return (
@@ -26,8 +27,8 @@ function Root() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <AuthProvider>
+    <LanguageProvider><AuthProvider>
       <Root />
-    </AuthProvider>
+    </AuthProvider></LanguageProvider>
   </StrictMode>,
 );

@@ -1,3 +1,4 @@
+import { useLanguage } from './context/LanguageContext';
 import React, { useState, useEffect } from "react";
 import { Header } from "./components/Header";
 import { SearchFilters } from "./components/SearchFilters";
@@ -12,6 +13,7 @@ import { Prospect, SearchFilterState, SearchHistoryItem, TabType, AIProviderId }
 import { SLOVAK_INDUSTRIES, SLOVAK_REGIONS } from "./data/slovakData";
 import { AI_PROVIDERS, DEFAULT_AI_PROVIDER } from "./data/aiProviders";
 import { safeFetchJson } from "./utils/api";
+import { normalizeProspect } from './utils/prospects';
 import { useAuth } from "./context/AuthContext";
 import {
   Sparkles,
@@ -27,6 +29,7 @@ import {
 } from "lucide-react";
 
 export default function App() {
+  const { language: uiLanguage, t } = useLanguage();
   const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>("discover");
 
@@ -38,8 +41,12 @@ export default function App() {
     maxEmployees: 50,
     count: 3,
     customKeywords: "",
-    language: "sk",
+    language: uiLanguage,
   });
+
+  useEffect(() => {
+    setFilters(previous => ({ ...previous, language: uiLanguage }));
+  }, [uiLanguage]);
 
   // Discovered Prospects
   const [prospects, setProspects] = useState<Prospect[]>([]);
@@ -226,7 +233,7 @@ export default function App() {
       try {
         const data = await safeFetchJson<{ success?: boolean; leads?: Prospect[] }>("/api/leads");
         if (data.success && Array.isArray(data.leads)) {
-          setSavedProspects(data.leads);
+          setSavedProspects(data.leads.filter(p => p && typeof p.id === 'string').map(normalizeProspect));
         }
       } catch (e) {
         console.warn("Failed to load pipeline from server", e);
@@ -261,17 +268,15 @@ export default function App() {
             minEmployees: filters.minEmployees,
             maxEmployees: filters.maxEmployees,
             count: 3,
-            language: "sk",
+            language: uiLanguage,
           }),
         });
 
         if (data.success && Array.isArray(data.prospects)) {
-          setProspects(data.prospects);
+          setProspects(data.prospects.map(normalizeProspect));
           if (data.isMock) {
             setStatusNotice(
-              activeApiKey
-                ? "Dáta sú pripravené z overenej databázy slovenských SMB subjektov."
-                : `Dáta sú pripravené z overenej databázy slovenských SMB subjektov. Pre živé volanie cez ${currentProviderConfig.name} kliknite vpravo hore na tlačidlo providera.`
+              "Ukážkové výsledky — nejde o živé vyhľadávanie ani overené kontakty. Pre živé výsledky nastavte AI kľúč."
             );
           }
         }
@@ -321,7 +326,7 @@ export default function App() {
       });
 
       if (data.success && Array.isArray(data.prospects)) {
-        setProspects(data.prospects);
+        setProspects(data.prospects.map(normalizeProspect));
 
         // Record into persistent Search History
         addSearchHistory({
@@ -336,16 +341,14 @@ export default function App() {
 
         if (data.isMock) {
           setStatusNotice(
-            activeApiKey
-              ? "Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi."
-              : `Vyhľadávanie prebehlo s overenými slovenskými SMB profilmi. Pre živé vyhľadávanie cez ${currentProviderConfig.name} môžete nastaviť kľúč v hornej lište.`
+            "Ukážkové výsledky — nejde o živé vyhľadávanie ani overené kontakty. Pre živé výsledky nastavte AI kľúč."
           );
         }
       } else {
-        throw new Error(data.error || "Nepodarilo sa načítať prospekty");
+        throw new Error(data.error || t("Nepodarilo sa načítať prospekty"));
       }
     } catch (err: any) {
-      setErrorMessage(err.message || "Chyba pri vyhľadávaní firiem");
+      setErrorMessage(err.message || t("Chyba pri vyhľadávaní firiem"));
     } finally {
       setIsLoading(false);
     }
@@ -370,6 +373,7 @@ export default function App() {
         success?: boolean;
         error?: string;
         prospect?: Prospect;
+        isMock?: boolean;
       }>("/api/audit/company", {
         method: "POST",
         headers: {
@@ -390,9 +394,9 @@ export default function App() {
 
       if (data.success && data.prospect) {
         // Prepend audit result to the top of prospects list and switch to discover/results view
-        setProspects((prev) => [data.prospect, ...prev.filter((p) => p.id !== data.prospect.id)]);
+        setProspects((prev) => [normalizeProspect(data.prospect), ...prev.filter((p) => p.id !== data.prospect.id)]);
         setActiveTab("discover");
-        setStatusNotice(`Hĺbkový audit pre ${data.prospect.companyName} bol úspešne dokončený.`);
+        setStatusNotice(data.isMock ? "Ukážkový audit — nejde o overenú analýzu webu." : t("Hĺbkový audit pre {0} bol úspešne dokončený.", data.prospect.companyName));
 
         // Record into Search History
         addSearchHistory({
@@ -407,10 +411,10 @@ export default function App() {
           resultsCount: 1,
         });
       } else {
-        throw new Error(data.error || "Audit sa nepodarilo vykonať");
+        throw new Error(data.error || t("Audit sa nepodarilo vykonať"));
       }
     } catch (err: any) {
-      setErrorMessage(err.message || "Chyba pri audite firmy");
+      setErrorMessage(err.message || t("Chyba pri audite firmy"));
     } finally {
       setIsLoading(false);
     }
@@ -419,15 +423,15 @@ export default function App() {
   // Handle click on recent search history item
   const handleSelectHistoryItem = (item: SearchHistoryItem) => {
     if (item.type === "market_discovery" && item.filters) {
-      setFilters(item.filters);
+      setFilters({ ...item.filters, language: uiLanguage });
       setActiveTab("discover");
-      executeSearch(item.filters);
+      executeSearch({ ...item.filters, language: uiLanguage });
     } else if (item.type === "company_audit" && item.auditTarget) {
       setActiveTab("audit");
       handleInstantAudit(
         item.auditTarget.urlOrName,
         item.auditTarget.industry,
-        item.auditTarget.language
+        uiLanguage
       );
     }
   };
@@ -442,7 +446,7 @@ export default function App() {
         await safeFetchJson(`/api/leads/${encodeURIComponent(prospect.id)}`, { method: "DELETE" });
       } catch (e: any) {
         setSavedProspects(prev); // rollback
-        setErrorMessage("Nepodarilo sa odstrániť prospekt z Pipeline.");
+        setErrorMessage(t("Nepodarilo sa odstrániť prospekt z Pipeline."));
       }
     } else {
       const optimistic = { ...prospect, status: "saved" as Prospect["status"] };
@@ -454,11 +458,11 @@ export default function App() {
           body: JSON.stringify({ lead: prospect }),
         });
         if (data.lead) {
-          setSavedProspects((s) => s.map((p) => (p.id === prospect.id ? data.lead! : p)));
+          setSavedProspects((s) => s.map((p) => (p.id === prospect.id ? normalizeProspect(data.lead!) : p)));
         }
       } catch (e: any) {
         setSavedProspects((s) => s.filter((p) => p.id !== prospect.id)); // rollback
-        setErrorMessage("Nepodarilo sa uložiť prospekt do Pipeline.");
+        setErrorMessage(t("Nepodarilo sa uložiť prospekt do Pipeline."));
       }
     }
   };
@@ -476,7 +480,7 @@ export default function App() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
-      }).catch(() => setErrorMessage("Stav sa nepodarilo uložiť na server."));
+      }).catch(() => setErrorMessage(t("Stav sa nepodarilo uložiť na server.")));
     }
   };
 
@@ -487,18 +491,18 @@ export default function App() {
   };
 
   // Save Updated Pitch from Modal (persist to backend for saved prospects)
-  const handleSaveUpdatedPitch = (prospectId: string, subject: string, body: string) => {
+  const handleSaveUpdatedPitch = (prospectId: string, subject: string, body: string, language: "sk" | "en") => {
     setProspects((prev) =>
       prev.map((p) =>
         p.id === prospectId
-          ? { ...p, coldOutreach: { ...p.coldOutreach, subject, body } }
+          ? { ...p, coldOutreach: { ...p.coldOutreach, subject, body, language } }
           : p
       )
     );
     setSavedProspects((prev) =>
       prev.map((p) =>
         p.id === prospectId
-          ? { ...p, coldOutreach: { ...p.coldOutreach, subject, body } }
+          ? { ...p, coldOutreach: { ...p.coldOutreach, subject, body, language } }
           : p
       )
     );
@@ -506,7 +510,7 @@ export default function App() {
       safeFetchJson(`/api/leads/${encodeURIComponent(prospectId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ coldOutreach: { subject, body } }),
+        body: JSON.stringify({ coldOutreach: { subject, body, language } }),
       }).catch(() => {});
     }
   };
@@ -519,7 +523,7 @@ export default function App() {
       await safeFetchJson(`/api/leads/${encodeURIComponent(id)}`, { method: "DELETE" });
     } catch {
       setSavedProspects(prev);
-      setErrorMessage("Nepodarilo sa odstrániť prospekt z Pipeline.");
+      setErrorMessage(t("Nepodarilo sa odstrániť prospekt z Pipeline."));
     }
   };
 
@@ -531,7 +535,7 @@ export default function App() {
       await safeFetchJson("/api/leads", { method: "DELETE" });
     } catch {
       setSavedProspects(prev);
-      setErrorMessage("Nepodarilo sa vyprázdniť Pipeline.");
+      setErrorMessage(t("Nepodarilo sa vyprázdniť Pipeline."));
     }
   };
 
@@ -544,15 +548,15 @@ export default function App() {
       );
       return {
         ok: true,
-        message: `Poslali sme ${data.count ?? ""} uložených firiem na ${data.sentTo || "váš e-mail"}.`,
+        message: t("Poslali sme {0} uložených firiem na {1}.", data.count ?? "", data.sentTo || "váš e-mail"),
       };
     } catch (e: any) {
-      return { ok: false, message: e?.message || "E-mail sa nepodarilo odoslať." };
+      return { ok: false, message: e?.message || t("E-mail sa nepodarilo odoslať.") };
     }
   };
 
   return (
-    <div className="min-h-screen bg-stone-100/70 text-stone-900 font-sans flex flex-col selection:bg-blue-100 selection:text-blue-900">
+    <div data-testid="app-div-1" className="min-h-screen bg-stone-100/70 text-stone-900 font-sans flex flex-col selection:bg-blue-100 selection:text-blue-900">
       {/* Top Header */}
       <Header
         activeTab={activeTab}
@@ -571,13 +575,13 @@ export default function App() {
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-6 pb-24 md:pb-8">
+      <main data-testid="app-main-2" className="flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-6 pb-24 md:pb-8">
         {/* Status Notice Banner (Dismissible or informative) */}
         {statusNotice && (
-          <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs sm:text-sm flex items-start gap-3">
+          <div data-testid="app-div-3" className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs sm:text-sm flex items-start gap-3">
             <CheckCircle2 className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
-            <div className="flex-1 leading-relaxed">{statusNotice}</div>
-            <button
+            <div data-testid="status-notice" className="flex-1 leading-relaxed">{t(statusNotice)}</div>
+            <button data-testid="app-button-4"
               onClick={() => setStatusNotice(null)}
               className="text-blue-600 hover:text-blue-800 font-bold ml-2 text-xs"
             >
@@ -588,10 +592,10 @@ export default function App() {
 
         {/* Error Alert */}
         {errorMessage && (
-          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs sm:text-sm flex items-start gap-3">
+          <div data-testid="app-div-5" className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs sm:text-sm flex items-start gap-3">
             <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-            <div className="flex-1 leading-relaxed">{errorMessage}</div>
-            <button
+            <div data-testid="app-error" role="alert" className="flex-1 leading-relaxed">{t(errorMessage)}</div>
+            <button data-testid="app-button-6"
               onClick={() => setErrorMessage(null)}
               className="text-rose-600 hover:text-rose-800 font-bold ml-2 text-xs"
             >
@@ -602,7 +606,7 @@ export default function App() {
 
         {/* Tab 1: Market Discovery */}
         {activeTab === "discover" && (
-          <div className="space-y-8">
+          <div data-testid="app-div-7" className="space-y-8">
             {/* Recent Search History */}
             <SearchHistory
               history={searchHistory}
@@ -620,36 +624,33 @@ export default function App() {
             />
 
             {/* Results Section */}
-            <div className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-stone-200">
-                <div>
-                  <h3 className="text-base font-bold text-stone-900">
-                    Nájdené B2B prospekty & audity webov ({prospects.length})
+            <div data-testid="app-div-8" className="space-y-4">
+              <div data-testid="app-div-9" className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-stone-200">
+                <div data-testid="app-div-10">
+                  <h3 data-testid="app-h3-11" className="text-base font-bold text-stone-900">
+                    {t("Nájdené B2B prospekty & audity webov (")}{prospects.length})
                   </h3>
-                  <p className="text-xs text-stone-500">
-                    Výsledky spĺňajúce kritérium SMB (3–50 zamestnancov) s auditom digitálnych bariér a draftom cold emailu.
-                  </p>
+                  <p data-testid="app-p-12" className="text-xs text-stone-500">
+                    {t("Výsledky spĺňajúce kritérium SMB (3–50 zamestnancov) s auditom digitálnych bariér a draftom cold emailu.")} </p>
                 </div>
 
-                <div className="flex items-center gap-2 text-xs text-stone-600 font-medium">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                  <span>Výstupná schéma je pripravená na okamžité kopírovanie</span>
+                <div data-testid="app-div-13" className="flex items-center gap-2 text-xs text-stone-600 font-medium">
+                  <span data-testid="app-span-14" className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                  <span data-testid="app-span-15">{t("Výstupná schéma je pripravená na okamžité kopírovanie")}</span>
                 </div>
               </div>
 
               {/* List of Prospects */}
               {isLoading && prospects.length === 0 ? (
-                <div className="p-12 text-center bg-white rounded-2xl border border-stone-200">
-                  <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                  <p className="text-sm font-semibold text-stone-800">
-                    Skenujem slovenský trh, registre ORSR & FinStat a webové stránky...
-                  </p>
-                  <p className="text-xs text-stone-500 mt-1">
-                    Analyzujem formuláre, cenníky v PDF, rýchlosť a dohľadávam konateľov firiem.
-                  </p>
+                <div data-testid="app-div-16" className="p-12 text-center bg-white rounded-2xl border border-stone-200">
+                  <div data-testid="app-div-17" className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                  <p data-testid="app-p-18" className="text-sm font-semibold text-stone-800">
+                    {t("Skenujem slovenský trh, registre ORSR & FinStat a webové stránky...")} </p>
+                  <p data-testid="app-p-19" className="text-xs text-stone-500 mt-1">
+                    {t("Analyzujem formuláre, cenníky v PDF, rýchlosť a dohľadávam konateľov firiem.")} </p>
                 </div>
               ) : (
-                <div className="space-y-6">
+                <div data-testid="app-div-20" className="space-y-6">
                   {prospects.map((prospect) => (
                     <ProspectCard
                       key={prospect.id}
@@ -668,7 +669,7 @@ export default function App() {
 
         {/* Tab 2: Instant Single Web/Company Audit */}
         {activeTab === "audit" && (
-          <div className="space-y-8">
+          <div data-testid="app-div-21" className="space-y-8">
             {/* Recent Search & Audit History */}
             <SearchHistory
               history={searchHistory}
@@ -681,11 +682,10 @@ export default function App() {
 
             {/* Display Most Recent Audits if any */}
             {prospects.length > 0 && (
-              <div className="space-y-4">
-                <h3 className="text-base font-bold text-stone-900">
-                  Nedávno auditované slovenské firmy
-                </h3>
-                <div className="space-y-6">
+              <div data-testid="app-div-22" className="space-y-4">
+                <h3 data-testid="app-h3-23" className="text-base font-bold text-stone-900">
+                  {t("Nedávno auditované slovenské firmy")} </h3>
+                <div data-testid="app-div-24" className="space-y-6">
                   {prospects.slice(0, 2).map((prospect) => (
                     <ProspectCard
                       key={prospect.id}
@@ -711,7 +711,7 @@ export default function App() {
             onOpenRefineModal={handleOpenRefineModal}
             onEmailMyLeads={handleEmailMyLeads}
             onClearAll={() => {
-              if (window.confirm("Naozaj chcete vymazať všetky uložené prospekty z Pipeline?")) {
+              if (window.confirm(t("Naozaj chcete vymazať všetky uložené prospekty z Pipeline?"))) {
                 handleClearPipeline();
               }
             }}
@@ -723,15 +723,15 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="mt-auto border-t border-stone-200/90 bg-white py-6 mb-16 md:mb-0">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-stone-500">
-          <div className="flex items-center gap-2">
+      <footer data-testid="app-footer-25" className="mt-auto border-t border-stone-200/90 bg-white py-6 mb-16 md:mb-0">
+        <div data-testid="app-div-26" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-stone-500">
+          <div data-testid="app-div-27" className="flex items-center gap-2">
             <Building2 className="w-4 h-4 text-blue-700" />
-            <span className="font-semibold text-stone-800">Slovak B2B Lead Generator & Web Audit</span>
-            <span>– špecializované pre slovenské malé a stredné podniky (3–50 zamestnancov)</span>
+            <span data-testid="app-span-28" className="font-semibold text-stone-800">Slovak B2B Lead Generator & Web Audit</span>
+            <span data-testid="app-span-29">{t("– špecializované pre slovenské malé a stredné podniky (3–50 zamestnancov)")}</span>
           </div>
-          <div className="flex items-center gap-4 text-stone-500">
-            <span>Zdroje: ORSR.sk • FinStat.sk • Overit.sk • Web Inspection</span>
+          <div data-testid="app-div-30" className="flex items-center gap-4 text-stone-500">
+            <span data-testid="app-span-31">{t("Zdroje: ORSR.sk • FinStat.sk • Overit.sk • Web Inspection")}</span>
           </div>
         </div>
       </footer>

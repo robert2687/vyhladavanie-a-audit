@@ -1,9 +1,12 @@
+import { useLanguage } from '../context/LanguageContext';
+import { LanguageSwitch } from './LanguageSwitch';
 import React, { useState } from "react";
 import { Building2, Mail, Lock, User, LogIn, UserPlus, AlertCircle, Loader2 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 export const Login: React.FC = () => {
-  const { login, register, loginWithGoogle } = useAuth();
+  const { language: uiLanguage, t } = useLanguage();
+  const { login, register, loginWithGoogle, authError } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -22,31 +25,31 @@ export const Login: React.FC = () => {
         await register(name.trim(), email.trim(), password);
       }
     } catch (err: any) {
-      setError(err?.message || "Prihlásenie zlyhalo. Skúste to znova.");
+      setError(err?.message || t("Prihlásenie zlyhalo. Skúste to znova."));
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-stone-100/70 flex flex-col items-center justify-center px-4 py-10 selection:bg-blue-100">
-      <div className="w-full max-w-md">
+    <div data-testid="login-div-1" className="min-h-screen bg-stone-100/70 flex flex-col items-center justify-center px-4 py-10 selection:bg-blue-100">
+      <div data-testid="login-div-2" className="w-full max-w-md">
+        <div data-testid="login-div-3" className="flex justify-end mb-5"><LanguageSwitch /></div>
         {/* Brand */}
-        <div className="flex flex-col items-center text-center mb-6">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-700 to-indigo-900 flex items-center justify-center text-white shadow-md ring-1 ring-blue-900/10 mb-3">
+        <div data-testid="login-div-4" className="flex flex-col items-center text-center mb-6">
+          <div data-testid="login-div-5" className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-700 to-indigo-900 flex items-center justify-center text-white shadow-md ring-1 ring-blue-900/10 mb-3">
             <Building2 className="w-7 h-7 text-blue-100" />
           </div>
-          <h1 className="text-xl font-bold tracking-tight text-stone-900">
+          <h1 data-testid="login-h1-6" className="text-xl font-bold tracking-tight text-stone-900">
             Slovak B2B Lead Generator
           </h1>
-          <p className="text-sm text-stone-500 mt-1">
-            Prihláste sa a získajte prístup k svojmu Pipeline na akomkoľvek zariadení.
-          </p>
+          <p data-testid="login-p-7" className="text-sm text-stone-500 mt-1">
+            {t("Prihláste sa a získajte prístup k svojmu Pipeline na akomkoľvek zariadení.")} </p>
         </div>
 
-        <div className="bg-white rounded-3xl border border-stone-200 shadow-sm p-6 sm:p-7">
+        <div data-testid="login-div-8" className="bg-white rounded-3xl border border-stone-200 shadow-sm p-6 sm:p-7">
           {/* Tabs */}
-          <div className="grid grid-cols-2 gap-1 p-1 bg-stone-100 rounded-xl mb-5">
+          <div data-testid="login-div-9" className="grid grid-cols-2 gap-1 p-1 bg-stone-100 rounded-xl mb-5">
             <button
               data-testid="auth-tab-login"
               type="button"
@@ -55,8 +58,7 @@ export const Login: React.FC = () => {
                 mode === "login" ? "bg-white text-stone-900 shadow-xs" : "text-stone-500 hover:text-stone-800"
               }`}
             >
-              Prihlásenie
-            </button>
+              {t("Prihlásenie")} </button>
             <button
               data-testid="auth-tab-register"
               type="button"
@@ -65,8 +67,7 @@ export const Login: React.FC = () => {
                 mode === "register" ? "bg-white text-stone-900 shadow-xs" : "text-stone-500 hover:text-stone-800"
               }`}
             >
-              Registrácia
-            </button>
+              {t("Registrácia")} </button>
           </div>
 
           {/* Google */}
@@ -82,20 +83,20 @@ export const Login: React.FC = () => {
               <path fill="#FBBC05" d="M5.27 14.28a7.2 7.2 0 0 1 0-4.56V6.63H1.27a12 12 0 0 0 0 10.74l4-3.09z" />
               <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.43-3.43C17.95 1.18 15.24 0 12 0A12 12 0 0 0 1.27 6.63l4 3.09C6.22 6.86 8.87 4.75 12 4.75z" />
             </svg>
-            <span>Pokračovať cez Google</span>
+            <span data-testid="login-span-10">{t("Pokračovať cez Google")}</span>
           </button>
 
-          <div className="flex items-center gap-3 my-5">
-            <div className="h-px bg-stone-200 flex-1" />
-            <span className="text-[11px] uppercase tracking-wider text-stone-400 font-semibold">alebo e-mailom</span>
-            <div className="h-px bg-stone-200 flex-1" />
+          <div data-testid="login-div-11" className="flex items-center gap-3 my-5">
+            <div data-testid="login-div-12" className="h-px bg-stone-200 flex-1" />
+            <span data-testid="login-span-13" className="text-[11px] uppercase tracking-wider text-stone-400 font-semibold">{t("alebo e-mailom")}</span>
+            <div data-testid="login-div-14" className="h-px bg-stone-200 flex-1" />
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-3.5">
+          <form data-testid="login-submit-15" onSubmit={handleSubmit} className="space-y-3.5">
             {mode === "register" && (
-              <div>
-                <label className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1.5">Meno</label>
-                <div className="relative">
+              <div data-testid="login-div-16">
+                <label data-testid="login-label-17" className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1.5">{t("Meno")}</label>
+                <div data-testid="login-div-18" className="relative">
                   <User className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     data-testid="register-name-input"
@@ -109,9 +110,9 @@ export const Login: React.FC = () => {
               </div>
             )}
 
-            <div>
-              <label className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1.5">E-mail</label>
-              <div className="relative">
+            <div data-testid="login-div-19">
+              <label data-testid="login-label-20" className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1.5">{t("E-mail")}</label>
+              <div data-testid="login-div-21" className="relative">
                 <Mail className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   data-testid="auth-email-input"
@@ -119,15 +120,15 @@ export const Login: React.FC = () => {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="vas@email.sk"
+                  placeholder={t("vas@email.sk")}
                   className="w-full bg-stone-50 border border-stone-300 rounded-xl pl-9 pr-3 h-11 text-sm text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-600"
                 />
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1.5">Heslo</label>
-              <div className="relative">
+            <div data-testid="login-div-22">
+              <label data-testid="login-label-23" className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1.5">{t("Heslo")}</label>
+              <div data-testid="login-div-24" className="relative">
                 <Lock className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   data-testid="auth-password-input"
@@ -135,16 +136,16 @@ export const Login: React.FC = () => {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder={mode === "register" ? "Aspoň 8 znakov" : "Vaše heslo"}
+                  placeholder={mode === "register" ? t("Aspoň 8 znakov") : t("Vaše heslo")}
                   className="w-full bg-stone-50 border border-stone-300 rounded-xl pl-9 pr-3 h-11 text-sm text-stone-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-600"
                 />
               </div>
             </div>
 
-            {error && (
+            {(error || authError) && (
               <div data-testid="auth-error" className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{error}</span>
+                <span data-testid="login-span-25">{t(error || authError || '')}</span>
               </div>
             )}
 
@@ -161,14 +162,13 @@ export const Login: React.FC = () => {
               ) : (
                 <UserPlus className="w-4 h-4" />
               )}
-              <span>{mode === "login" ? "Prihlásiť sa" : "Vytvoriť účet"}</span>
+              <span data-testid="login-span-26">{mode === "login" ? t("Prihlásiť sa") : t("Vytvoriť účet")}</span>
             </button>
           </form>
         </div>
 
-        <p className="text-center text-[11px] text-stone-400 mt-5">
-          Vaše uložené prospekty sú bezpečne uložené vo vašom účte.
-        </p>
+        <p data-testid="login-p-27" className="text-center text-[11px] text-stone-400 mt-5">
+          {t("Vaše uložené prospekty sú bezpečne uložené vo vašom účte.")} </p>
       </div>
     </div>
   );

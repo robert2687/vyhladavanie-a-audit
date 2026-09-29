@@ -1,3 +1,17 @@
+# English / Slovak & authentication verification
+
+- Use the current REACT_APP_BACKEND_URL in `/app/frontend/.env`.
+- Existing admin credentials: `/app/memory/test_credentials.md`.
+- Google redirect must derive from `window.location.origin`, with no hardcoded callback domain.
+- Returning `#session_id=...` must be exchanged once before `/api/auth/me`; verify under React StrictMode.
+- Only the backend calls Emergent `/auth/v1/env/oauth/session-data` with `X-Session-ID`.
+- Persist provider-issued `session_token` for seven days; require a nonempty token and email. No fabricated tokens.
+- `/api/auth/me` and `/api/leads` validate sessions server-side. Expired sessions must fail.
+- For Google session tests, create a temporary user with a unique `user_id` and a matching `sessions` document with UTC `expires_at`; use a secure httpOnly SameSite=None session cookie in the browser. Remove only test-owned records after testing. This is a simulated session, not proof of Google consent completion.
+- Verify email/password registration, login, invalid password, logout and private pipeline isolation in both languages.
+- UI language persists in `slovak_b2b_language`, including across sign-in/out. New search/audit/pitch requests carry `language`; `x-ui-language` localizes application errors.
+- Document any test identities created in `memory/test_credentials.md` and distinguish simulated Google sessions from real OAuth consent.
+
 # Auth Testing Playbook (Node/Express + MongoDB)
 
 This app uses BOTH:
