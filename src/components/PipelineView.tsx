@@ -11,6 +11,9 @@ import {
   ExternalLink,
   Mail,
   UserCheck,
+  Send,
+  Loader2,
+  Contact,
 } from "lucide-react";
 import { Prospect } from "../types";
 import { ProspectCard } from "./ProspectCard";
@@ -21,6 +24,7 @@ interface PipelineViewProps {
   onUpdateStatus: (id: string, status: Prospect["status"]) => void;
   onOpenRefineModal: (prospect: Prospect) => void;
   onClearAll: () => void;
+  onEmailMyLeads?: () => Promise<{ ok: boolean; message: string }>;
 }
 
 export const PipelineView: React.FC<PipelineViewProps> = ({
@@ -29,10 +33,17 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   onUpdateStatus,
   onOpenRefineModal,
   onClearAll,
+  onEmailMyLeads,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [copiedAll, setCopiedAll] = useState(false);
+  const [copiedCrm, setCopiedCrm] = useState(false);
+  const [emailing, setEmailing] = useState(false);
+  const [emailNotice, setEmailNotice] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const extractEmail = (contact: string) => contact.match(/[\w.-]+@[\w.-]+\.\w+/)?.[0] || "";
+  const extractPhone = (contact: string) => contact.match(/\+?\d[\d\s]{6,}\d/)?.[0]?.trim() || "";
 
   const filtered = savedProspects.filter((item) => {
     const matchesSearch =
@@ -119,6 +130,55 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
     setTimeout(() => setCopiedAll(false), 2000);
   };
 
+  // HubSpot / Pipedrive friendly tab-separated columns, ready to paste into an import.
+  const copyForCRM = async () => {
+    if (savedProspects.length === 0) return;
+    const headers = [
+      "Company name",
+      "Website",
+      "Industry",
+      "Contact name",
+      "Email",
+      "Phone",
+      "Deal stage",
+      "Notes",
+    ];
+    const stageMap: Record<string, string> = {
+      new: "New",
+      saved: "New",
+      contacted: "Contacted",
+      meeting: "Meeting scheduled",
+      archived: "Archived",
+    };
+    const lines = savedProspects.map((p) =>
+      [
+        p.companyName,
+        p.website,
+        p.industry,
+        p.targetDecisionMaker,
+        extractEmail(p.directContact),
+        extractPhone(p.directContact),
+        stageMap[p.status] || "New",
+        (p.valueProposition || "").replace(/\t/g, " "),
+      ]
+        .map((v) => String(v ?? "").replace(/[\t\n\r]+/g, " ").trim())
+        .join("\t")
+    );
+    await navigator.clipboard.writeText([headers.join("\t"), ...lines].join("\n"));
+    setCopiedCrm(true);
+    setTimeout(() => setCopiedCrm(false), 2000);
+  };
+
+  const handleEmailMe = async () => {
+    if (!onEmailMyLeads || emailing) return;
+    setEmailing(true);
+    setEmailNotice(null);
+    const result = await onEmailMyLeads();
+    setEmailNotice(result);
+    setEmailing(false);
+    setTimeout(() => setEmailNotice(null), 6000);
+  };
+
   if (savedProspects.length === 0) {
     return (
       <div className="bg-white rounded-2xl border border-stone-200 p-8 sm:p-12 text-center">
@@ -163,16 +223,37 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
         </div>
 
         {/* Action Buttons */}
-        <div className="grid grid-cols-3 sm:flex items-center gap-1.5 sm:gap-2 pt-1 sm:pt-0">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 pt-1 sm:pt-0">
           <button
+            data-testid="export-csv-btn"
             onClick={exportToCSV}
             className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 transition-colors min-h-[40px] touch-manipulation"
           >
             <Download className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">Export CSV</span>
+            <span className="truncate">Excel / CSV</span>
           </button>
 
           <button
+            data-testid="copy-crm-btn"
+            onClick={copyForCRM}
+            title="Skopíruje stĺpce pripravené na import do HubSpot / Pipedrive"
+            className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 transition-colors min-h-[40px] touch-manipulation"
+          >
+            {copiedCrm ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="text-emerald-700 truncate">Skopírované</span>
+              </>
+            ) : (
+              <>
+                <Contact className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Kopírovať pre CRM</span>
+              </>
+            )}
+          </button>
+
+          <button
+            data-testid="copy-md-btn"
             onClick={copyAllMarkdown}
             className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 transition-colors min-h-[40px] touch-manipulation"
           >
@@ -189,7 +270,21 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
             )}
           </button>
 
+          {onEmailMyLeads && (
+            <button
+              data-testid="email-me-btn"
+              onClick={handleEmailMe}
+              disabled={emailing}
+              title="Pošle prehľad vášho Pipeline na e-mail vášho účtu"
+              className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white transition-colors min-h-[40px] touch-manipulation"
+            >
+              {emailing ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <Send className="w-3.5 h-3.5 shrink-0" />}
+              <span className="truncate">Poslať mi e-mailom</span>
+            </button>
+          )}
+
           <button
+            data-testid="clear-pipeline-btn"
             onClick={onClearAll}
             className="inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 text-[11px] sm:text-xs font-semibold rounded-xl text-rose-600 bg-rose-50/50 hover:bg-rose-50 transition-colors min-h-[40px] touch-manipulation"
             title="Vyprázdniť pipeline"
@@ -199,6 +294,20 @@ ${p.identifiedWebSignals.map((gap) => `- ${gap}`).join("\n")}
           </button>
         </div>
       </div>
+
+      {emailNotice && (
+        <div
+          data-testid="email-notice"
+          className={`px-4 py-3 rounded-xl border text-xs sm:text-sm flex items-start gap-2 ${
+            emailNotice.ok
+              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+              : "bg-rose-50 border-rose-200 text-rose-800"
+          }`}
+        >
+          {emailNotice.ok ? <Check className="w-4 h-4 shrink-0 mt-0.5" /> : <Mail className="w-4 h-4 shrink-0 mt-0.5" />}
+          <span>{emailNotice.message}</span>
+        </div>
+      )}
 
       {/* List of Saved Prospects */}
       <div className="space-y-6">

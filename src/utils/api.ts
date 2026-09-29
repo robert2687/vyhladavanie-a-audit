@@ -12,7 +12,7 @@ export async function safeFetchJson<T = any>(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<T> {
-  const response = await fetch(input, init);
+  const response = await fetch(input, { credentials: "include", ...init });
   const text = await response.text();
 
   let data: any;

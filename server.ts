@@ -2,6 +2,11 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { MongoClient, Db } from "mongodb";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import cookieParser from "cookie-parser";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -9,6 +14,7 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
 
 let aiClient: GoogleGenAI | null = null;
 let isDefaultGeminiAvailable = Boolean(process.env.GEMINI_API_KEY);
@@ -1633,6 +1639,432 @@ app.get("/api/export/python-script", (req, res) => {
   res.send(PYTHON_MULTI_PROVIDER_SCRIPT);
 });
 
+// =====================================================================
+// Auth + MongoDB + Cloud Pipeline + Transactional Email (added features)
+// =====================================================================
+
+let _db: Db | null = null;
+async function getDb(): Promise<Db> {
+  if (_db) return _db;
+  const url = process.env.MONGO_URL;
+  if (!url) throw new Error("MONGO_URL is not set");
+  const client = new MongoClient(url);
+  await client.connect();
+  _db = client.db(process.env.DB_NAME || "slovak_b2b");
+  await _db.collection("users").createIndex({ email: 1 }, { unique: true });
+  await _db.collection("sessions").createIndex({ session_token: 1 });
+  await _db.collection("leads").createIndex({ user_id: 1, leadId: 1 }, { unique: true });
+  return _db;
+}
+
+const JWT_ALGORITHM = "HS256" as const;
+const ACCESS_TTL_SEC = 15 * 60;
+const REFRESH_TTL_SEC = 7 * 24 * 60 * 60;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getJwtSecret(): string {
+  const s = process.env.JWT_SECRET;
+  if (!s) throw new Error("JWT_SECRET is not set");
+  return s;
+}
+
+function createAccessToken(userId: string, email: string): string {
+  return jwt.sign({ sub: userId, email, type: "access" }, getJwtSecret(), {
+    algorithm: JWT_ALGORITHM,
+    expiresIn: ACCESS_TTL_SEC,
+  });
+}
+function createRefreshToken(userId: string): string {
+  return jwt.sign({ sub: userId, type: "refresh" }, getJwtSecret(), {
+    algorithm: JWT_ALGORITHM,
+    expiresIn: REFRESH_TTL_SEC,
+  });
+}
+
+const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: "none" as const, path: "/" };
+
+function setAuthCookies(res: express.Response, userId: string, email: string) {
+  res.cookie("access_token", createAccessToken(userId, email), { ...COOKIE_BASE, maxAge: ACCESS_TTL_SEC * 1000 });
+  res.cookie("refresh_token", createRefreshToken(userId), { ...COOKIE_BASE, maxAge: REFRESH_TTL_SEC * 1000 });
+}
+function clearAuthCookies(res: express.Response) {
+  res.clearCookie("access_token", COOKIE_BASE);
+  res.clearCookie("refresh_token", COOKIE_BASE);
+  res.clearCookie("session_token", COOKIE_BASE);
+}
+
+function publicUser(u: any) {
+  if (!u) return null;
+  return {
+    user_id: u.user_id,
+    email: u.email,
+    name: u.name || "",
+    picture: u.picture || "",
+    role: u.role || "user",
+    auth_provider: u.auth_provider || "password",
+  };
+}
+
+// Resolve the current user from JWT access token (cookie/Bearer) or Emergent session token.
+async function getCurrentUser(req: express.Request): Promise<any | null> {
+  const db = await getDb();
+  const authHeader = (req.headers["authorization"] as string) || "";
+  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+  // 1) JWT access token
+  const accessToken = req.cookies?.access_token || bearer;
+  if (accessToken) {
+    try {
+      const payload: any = jwt.verify(accessToken, getJwtSecret());
+      if (payload?.type === "access" && payload?.sub) {
+        const user = await db.collection("users").findOne({ user_id: payload.sub }, { projection: { _id: 0 } });
+        if (user) return user;
+      }
+    } catch {
+      // fall through to session token
+    }
+  }
+
+  // 2) Emergent session token
+  const sessionToken = req.cookies?.session_token || bearer;
+  if (sessionToken) {
+    const sess = await db.collection("sessions").findOne({ session_token: sessionToken });
+    if (sess) {
+      let expiresAt = sess.expires_at;
+      if (typeof expiresAt === "string") expiresAt = new Date(expiresAt);
+      if (expiresAt && expiresAt.getTime() > Date.now()) {
+        const user = await db.collection("users").findOne({ user_id: sess.user_id }, { projection: { _id: 0 } });
+        if (user) return user;
+      }
+    }
+  }
+  return null;
+}
+
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
+    (req as any).user = user;
+    next();
+  } catch (e: any) {
+    res.status(500).json({ error: "Chyba pri overení prihlásenia." });
+  }
+}
+
+async function seedAdmin() {
+  try {
+    const db = await getDb();
+    const email = (process.env.ADMIN_EMAIL || "").toLowerCase();
+    const password = process.env.ADMIN_PASSWORD || "";
+    if (!email || !password) return;
+    const existing = await db.collection("users").findOne({ email });
+    if (!existing) {
+      await db.collection("users").insertOne({
+        user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+        email,
+        name: "Admin",
+        role: "admin",
+        auth_provider: "password",
+        password_hash: bcrypt.hashSync(password, 10),
+        created_at: new Date(),
+      });
+      console.log(`[seed] Admin user created: ${email}`);
+    } else if (existing.password_hash && !bcrypt.compareSync(password, existing.password_hash)) {
+      await db.collection("users").updateOne({ email }, { $set: { password_hash: bcrypt.hashSync(password, 10) } });
+    }
+  } catch (e: any) {
+    console.warn("[seed] admin seeding skipped:", e?.message || e);
+  }
+}
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+// ---- Auth routes ----
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const db = await getDb();
+    const name = (req.body?.name || "").trim();
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password || "";
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "Zadajte platný e-mail." });
+    if (password.length < 8) return res.status(400).json({ error: "Heslo musí mať aspoň 8 znakov." });
+    const exists = await db.collection("users").findOne({ email });
+    if (exists) return res.status(409).json({ error: "Používateľ s týmto e-mailom už existuje." });
+    const user = {
+      user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+      email,
+      name: name || email.split("@")[0],
+      role: "user",
+      auth_provider: "password",
+      password_hash: bcrypt.hashSync(password, 10),
+      created_at: new Date(),
+    };
+    await db.collection("users").insertOne(user);
+    setAuthCookies(res, user.user_id, user.email);
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Registrácia zlyhala. Skúste znova." });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const db = await getDb();
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password || "";
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
+    const identifier = `${ip}:${email}`;
+
+    const attempt = await db.collection("login_attempts").findOne({ identifier });
+    if (attempt && attempt.count >= 5 && attempt.lockedUntil && new Date(attempt.lockedUntil).getTime() > Date.now()) {
+      return res.status(429).json({ error: "Príliš veľa pokusov. Skúste to o 15 minút." });
+    }
+
+    const user = await db.collection("users").findOne({ email });
+    const ok = user && user.password_hash && bcrypt.compareSync(password, user.password_hash);
+    if (!ok) {
+      const count = (attempt?.count || 0) + 1;
+      await db.collection("login_attempts").updateOne(
+        { identifier },
+        { $set: { identifier, count, lockedUntil: count >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null } },
+        { upsert: true }
+      );
+      return res.status(401).json({ error: "Nesprávny e-mail alebo heslo." });
+    }
+    await db.collection("login_attempts").deleteOne({ identifier });
+    setAuthCookies(res, user.user_id, user.email);
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Prihlásenie zlyhalo. Skúste znova." });
+  }
+});
+
+// Emergent-managed Google login: exchange session_id for a session token.
+// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+app.post("/api/auth/google/session", async (req, res) => {
+  try {
+    const db = await getDb();
+    const sessionId = req.body?.session_id;
+    if (!sessionId) return res.status(400).json({ error: "Chýba session_id." });
+
+    const resp = await fetch("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data", {
+      method: "GET",
+      headers: { "X-Session-ID": sessionId },
+    });
+    if (!resp.ok) return res.status(401).json({ error: "Google prihlásenie sa nepodarilo overiť." });
+    const data: any = await resp.json();
+    const email = (data.email || "").trim().toLowerCase();
+    if (!email) return res.status(401).json({ error: "Google účet neposkytol e-mail." });
+
+    let user: any = await db.collection("users").findOne({ email });
+    if (!user) {
+      user = {
+        user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+        email,
+        name: data.name || email.split("@")[0],
+        picture: data.picture || "",
+        role: "user",
+        auth_provider: "google",
+        created_at: new Date(),
+      };
+      await db.collection("users").insertOne(user as any);
+    } else if (data.picture && user.picture !== data.picture) {
+      await db.collection("users").updateOne({ email }, { $set: { picture: data.picture } });
+    }
+
+    const sessionToken = data.session_token || `sess_${crypto.randomBytes(24).toString("hex")}`;
+    await db.collection("sessions").insertOne({
+      user_id: user.user_id,
+      session_token: sessionToken,
+      expires_at: new Date(Date.now() + SESSION_TTL_MS),
+      created_at: new Date(),
+    });
+    res.cookie("session_token", sessionToken, { ...COOKIE_BASE, maxAge: SESSION_TTL_MS });
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Google prihlásenie zlyhalo." });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const token = req.cookies?.session_token;
+    if (token) {
+      const db = await getDb();
+      await db.collection("sessions").deleteOne({ session_token: token });
+    }
+  } catch {
+    // ignore
+  }
+  clearAuthCookies(res);
+  res.json({ success: true });
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  const user = await getCurrentUser(req);
+  if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
+  res.json(publicUser(user));
+});
+
+app.post("/api/auth/refresh", async (req, res) => {
+  try {
+    const token = req.cookies?.refresh_token;
+    if (!token) return res.status(401).json({ error: "Chýba refresh token." });
+    const payload: any = jwt.verify(token, getJwtSecret());
+    if (payload?.type !== "refresh" || !payload?.sub) return res.status(401).json({ error: "Neplatný token." });
+    const db = await getDb();
+    const user = await db.collection("users").findOne({ user_id: payload.sub }, { projection: { _id: 0 } });
+    if (!user) return res.status(401).json({ error: "Používateľ neexistuje." });
+    res.cookie("access_token", createAccessToken(user.user_id, user.email), { ...COOKIE_BASE, maxAge: ACCESS_TTL_SEC * 1000 });
+    res.json({ success: true, user: publicUser(user) });
+  } catch {
+    res.status(401).json({ error: "Neplatný alebo expirovaný token." });
+  }
+});
+
+// ---- Cloud Pipeline (per-user saved leads) ----
+app.get("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const docs = await db
+    .collection("leads")
+    .find({ user_id: user.user_id }, { projection: { _id: 0, user_id: 0 } })
+    .sort({ saved_at: -1 })
+    .toArray();
+  res.json({ success: true, leads: docs.map((d: any) => d.lead) });
+});
+
+app.post("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const lead = req.body?.lead;
+  if (!lead || !lead.id) return res.status(400).json({ error: "Neplatný prospekt." });
+  const saved = { ...lead, status: lead.status === "new" ? "saved" : lead.status || "saved" };
+  await db.collection("leads").updateOne(
+    { user_id: user.user_id, leadId: lead.id },
+    { $set: { user_id: user.user_id, leadId: lead.id, lead: saved, saved_at: new Date() } },
+    { upsert: true }
+  );
+  res.json({ success: true, lead: saved });
+});
+
+app.patch("/api/leads/:leadId", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const existing = await db.collection("leads").findOne({ user_id: user.user_id, leadId: req.params.leadId });
+  if (!existing) return res.status(404).json({ error: "Prospekt sa nenašiel." });
+  const updatedLead = { ...existing.lead };
+  if (req.body?.status) updatedLead.status = req.body.status;
+  if (typeof req.body?.notes === "string") updatedLead.notes = req.body.notes;
+  if (req.body?.coldOutreach) updatedLead.coldOutreach = { ...updatedLead.coldOutreach, ...req.body.coldOutreach };
+  await db.collection("leads").updateOne(
+    { user_id: user.user_id, leadId: req.params.leadId },
+    { $set: { lead: updatedLead, saved_at: existing.saved_at || new Date() } }
+  );
+  res.json({ success: true, lead: updatedLead });
+});
+
+app.delete("/api/leads/:leadId", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  await db.collection("leads").deleteOne({ user_id: user.user_id, leadId: req.params.leadId });
+  res.json({ success: true });
+});
+
+app.delete("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  await db.collection("leads").deleteMany({ user_id: user.user_id });
+  res.json({ success: true });
+});
+
+// ---- Transactional email: send the logged-in user THEIR OWN saved leads ----
+// Guardrail note: cold outreach to prospects is NOT sent via the managed provider
+// (prohibited). This route emails the authenticated account owner their own data only.
+const EMAIL_BASE_URL = "https://integrations.emergentagent.com";
+
+function esc(s: any): string {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function assertSafeEmail(subject: string, html: string) {
+  if (/<\s*(form|input|textarea|select)\b/i.test(html)) throw new Error("No forms/inputs allowed in email");
+  const urls = [...html.matchAll(/(?:href|src)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
+  for (const url of urls) {
+    const low = url.trim().toLowerCase();
+    if (low.startsWith("mailto:") || low.startsWith("tel:") || low.startsWith("cid:") || low.startsWith("#")) continue;
+    if (!low.startsWith("https://")) throw new Error(`Email links must be absolute https: ${url}`);
+  }
+}
+
+async function sendEmail(opts: { to: string; subject: string; html: string; replyTo?: string }) {
+  assertSafeEmail(opts.subject, opts.html);
+  const key = process.env.EMERGENT_EMAIL_KEY;
+  const fromName = process.env.EMAIL_FROM_NAME;
+  if (!key || !fromName) throw new Error("Email is not configured");
+  const payload: any = { to: [opts.to], subject: opts.subject, html: opts.html, from_name: fromName };
+  const replyTo = opts.replyTo || process.env.EMAIL_REPLY_TO;
+  if (replyTo) payload.contact_email = replyTo;
+  const resp = await fetch(`${EMAIL_BASE_URL}/api/v1/email/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Email-Key": key },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(`Email send failed (${resp.status}): ${t.slice(0, 120)}`);
+  }
+  const data: any = await resp.json().catch(() => ({}));
+  return data?.id || null;
+}
+
+app.post("/api/leads/email-me", requireAuth, async (req, res) => {
+  try {
+    const db = await getDb();
+    const user = (req as any).user;
+    const docs = await db
+      .collection("leads")
+      .find({ user_id: user.user_id }, { projection: { _id: 0 } })
+      .sort({ saved_at: -1 })
+      .toArray();
+    if (docs.length === 0) return res.status(400).json({ error: "Vo vašom Pipeline nie sú žiadne uložené firmy." });
+
+    const brand = esc(process.env.EMAIL_FROM_NAME || "Slovak B2B Lead Generator");
+    const rows = docs
+      .map((d: any) => {
+        const p = d.lead || {};
+        return `<tr>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.companyName)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.industry)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.directContact)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.status)}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const html = `<table role="presentation" width="100%" style="max-width:720px"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#222">
+      <h2 style="margin:0 0 4px">Vaše uložené B2B prospekty</h2>
+      <p style="margin:0 0 16px;color:#666;font-size:14px">Prehľad ${docs.length} firiem z vášho Pipeline v aplikácii ${brand}.</p>
+      <table role="presentation" width="100%" style="border-collapse:collapse">
+        <tr>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Firma</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Odvetvie</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Kontakt</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Stav</th>
+        </tr>
+        ${rows}
+      </table>
+      <p style="font-size:12px;color:#999;margin-top:20px">Odoslané službou ${brand} na vašu žiadosť. Nikdy vás nežiadame o heslo ani platobné údaje e-mailom.</p>
+    </td></tr></table>`;
+
+    const id = await sendEmail({ to: user.email, subject: `Vaše uložené B2B prospekty (${docs.length}) — ${process.env.EMAIL_FROM_NAME}`, html });
+    res.json({ success: true, email_id: id, count: docs.length, sentTo: user.email });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || "E-mail sa nepodarilo odoslať." });
+  }
+});
+
 // Start server with Vite middleware in dev or static files in production
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
@@ -1667,6 +2099,9 @@ async function startServer() {
       console.log(`B2B Slovak Lead Generation server running on port ${p}`);
     });
   }
+
+  // Seed the admin account (idempotent) once the server is up.
+  seedAdmin();
 }
 
 export default app;

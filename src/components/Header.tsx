@@ -1,5 +1,5 @@
 import React from "react";
-import { Search, Globe, BookmarkCheck, BookOpen, Building2, Key } from "lucide-react";
+import { Search, Globe, BookmarkCheck, BookOpen, Building2, Key, LogOut } from "lucide-react";
 import { TabType } from "../types";
 
 interface HeaderProps {
@@ -10,6 +10,9 @@ interface HeaderProps {
   hasCustomKey: boolean;
   activeProviderName?: string;
   activeModelName?: string;
+  userName?: string;
+  userEmail?: string;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -20,6 +23,9 @@ export const Header: React.FC<HeaderProps> = ({
   hasCustomKey,
   activeProviderName = "Google Gemini",
   activeModelName,
+  userName,
+  userEmail,
+  onLogout,
 }) => {
   return (
     <>
@@ -146,6 +152,26 @@ export const Header: React.FC<HeaderProps> = ({
                   </span>
                 </div>
               </button>
+
+              {/* User identity + logout */}
+              {onLogout && (
+                <div className="flex items-center gap-1.5">
+                  <div className="hidden lg:flex flex-col items-end leading-tight mr-0.5" data-testid="current-user-chip">
+                    <span className="text-xs font-bold text-stone-800 max-w-[140px] truncate">{userName || "Používateľ"}</span>
+                    {userEmail && <span className="text-[10px] text-stone-400 max-w-[140px] truncate">{userEmail}</span>}
+                  </div>
+                  <button
+                    id="logout-btn"
+                    data-testid="logout-btn"
+                    onClick={onLogout}
+                    title="Odhlásiť sa"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-2 min-h-[40px] sm:min-h-[42px] text-xs font-semibold rounded-xl border border-stone-200 bg-white text-stone-700 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 transition-colors touch-manipulation"
+                  >
+                    <LogOut className="w-4 h-4 shrink-0" />
+                    <span className="hidden sm:inline">Odhlásiť</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

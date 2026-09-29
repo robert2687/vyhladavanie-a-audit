@@ -12,6 +12,7 @@ import { Prospect, SearchFilterState, SearchHistoryItem, TabType, AIProviderId }
 import { SLOVAK_INDUSTRIES, SLOVAK_REGIONS } from "./data/slovakData";
 import { AI_PROVIDERS, DEFAULT_AI_PROVIDER } from "./data/aiProviders";
 import { safeFetchJson } from "./utils/api";
+import { useAuth } from "./context/AuthContext";
 import {
   Sparkles,
   Building2,
@@ -26,6 +27,7 @@ import {
 } from "lucide-react";
 
 export default function App() {
+  const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>("discover");
 
   // Search Filter State
@@ -45,15 +47,8 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
 
-  // Saved Pipeline Prospects
-  const [savedProspects, setSavedProspects] = useState<Prospect[]>(() => {
-    try {
-      const saved = localStorage.getItem("slovak_b2b_saved_leads");
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  // Saved Pipeline Prospects (persisted per-user in the cloud)
+  const [savedProspects, setSavedProspects] = useState<Prospect[]>([]);
 
   // Modal State for Refining Outreach Pitch
   const [refiningProspect, setRefiningProspect] = useState<Prospect | null>(null);
@@ -225,14 +220,20 @@ export default function App() {
     });
   };
 
-  // Save to localStorage when savedProspects changes
+  // Load the user's saved pipeline from the backend on mount.
   useEffect(() => {
-    try {
-      localStorage.setItem("slovak_b2b_saved_leads", JSON.stringify(savedProspects));
-    } catch (e) {
-      console.error("Failed to save to localStorage", e);
-    }
-  }, [savedProspects]);
+    const loadPipeline = async () => {
+      try {
+        const data = await safeFetchJson<{ success?: boolean; leads?: Prospect[] }>("/api/leads");
+        if (data.success && Array.isArray(data.leads)) {
+          setSavedProspects(data.leads);
+        }
+      } catch (e) {
+        console.warn("Failed to load pipeline from server", e);
+      }
+    };
+    loadPipeline();
+  }, []);
 
   // Initial load: Fetch default sample search on mount if empty
   useEffect(() => {
@@ -431,19 +432,38 @@ export default function App() {
     }
   };
 
-  // Toggle Save / Unsave to Pipeline
-  const handleToggleSave = (prospect: Prospect) => {
-    setSavedProspects((prev) => {
-      const exists = prev.some((p) => p.id === prospect.id);
-      if (exists) {
-        return prev.filter((p) => p.id !== prospect.id);
-      } else {
-        return [{ ...prospect, status: "saved" }, ...prev];
+  // Toggle Save / Unsave to Pipeline (persisted to backend)
+  const handleToggleSave = async (prospect: Prospect) => {
+    const exists = savedProspects.some((p) => p.id === prospect.id);
+    if (exists) {
+      const prev = savedProspects;
+      setSavedProspects((s) => s.filter((p) => p.id !== prospect.id));
+      try {
+        await safeFetchJson(`/api/leads/${encodeURIComponent(prospect.id)}`, { method: "DELETE" });
+      } catch (e: any) {
+        setSavedProspects(prev); // rollback
+        setErrorMessage("Nepodarilo sa odstrániť prospekt z Pipeline.");
       }
-    });
+    } else {
+      const optimistic = { ...prospect, status: "saved" as Prospect["status"] };
+      setSavedProspects((s) => [optimistic, ...s]);
+      try {
+        const data = await safeFetchJson<{ success?: boolean; lead?: Prospect }>("/api/leads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lead: prospect }),
+        });
+        if (data.lead) {
+          setSavedProspects((s) => s.map((p) => (p.id === prospect.id ? data.lead! : p)));
+        }
+      } catch (e: any) {
+        setSavedProspects((s) => s.filter((p) => p.id !== prospect.id)); // rollback
+        setErrorMessage("Nepodarilo sa uložiť prospekt do Pipeline.");
+      }
+    }
   };
 
-  // Update Status in Pipeline
+  // Update Status in Pipeline (persisted for saved prospects)
   const handleUpdateStatus = (id: string, newStatus: Prospect["status"]) => {
     setSavedProspects((prev) =>
       prev.map((p) => (p.id === id ? { ...p, status: newStatus } : p))
@@ -451,6 +471,13 @@ export default function App() {
     setProspects((prev) =>
       prev.map((p) => (p.id === id ? { ...p, status: newStatus } : p))
     );
+    if (savedProspects.some((p) => p.id === id)) {
+      safeFetchJson(`/api/leads/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      }).catch(() => setErrorMessage("Stav sa nepodarilo uložiť na server."));
+    }
   };
 
   // Open Pitch Refinement Modal
@@ -459,7 +486,7 @@ export default function App() {
     setIsRefineModalOpen(true);
   };
 
-  // Save Updated Pitch from Modal
+  // Save Updated Pitch from Modal (persist to backend for saved prospects)
   const handleSaveUpdatedPitch = (prospectId: string, subject: string, body: string) => {
     setProspects((prev) =>
       prev.map((p) =>
@@ -475,6 +502,53 @@ export default function App() {
           : p
       )
     );
+    if (savedProspects.some((p) => p.id === prospectId)) {
+      safeFetchJson(`/api/leads/${encodeURIComponent(prospectId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ coldOutreach: { subject, body } }),
+      }).catch(() => {});
+    }
+  };
+
+  // Remove a single prospect from the cloud pipeline.
+  const handleRemoveFromPipeline = async (id: string) => {
+    const prev = savedProspects;
+    setSavedProspects((s) => s.filter((p) => p.id !== id));
+    try {
+      await safeFetchJson(`/api/leads/${encodeURIComponent(id)}`, { method: "DELETE" });
+    } catch {
+      setSavedProspects(prev);
+      setErrorMessage("Nepodarilo sa odstrániť prospekt z Pipeline.");
+    }
+  };
+
+  // Clear the entire cloud pipeline.
+  const handleClearPipeline = async () => {
+    const prev = savedProspects;
+    setSavedProspects([]);
+    try {
+      await safeFetchJson("/api/leads", { method: "DELETE" });
+    } catch {
+      setSavedProspects(prev);
+      setErrorMessage("Nepodarilo sa vyprázdniť Pipeline.");
+    }
+  };
+
+  // Email the logged-in user their own saved pipeline (transactional).
+  const handleEmailMyLeads = async (): Promise<{ ok: boolean; message: string }> => {
+    try {
+      const data = await safeFetchJson<{ success?: boolean; count?: number; sentTo?: string }>(
+        "/api/leads/email-me",
+        { method: "POST" }
+      );
+      return {
+        ok: true,
+        message: `Poslali sme ${data.count ?? ""} uložených firiem na ${data.sentTo || "váš e-mail"}.`,
+      };
+    } catch (e: any) {
+      return { ok: false, message: e?.message || "E-mail sa nepodarilo odoslať." };
+    }
   };
 
   return (
@@ -491,6 +565,9 @@ export default function App() {
         hasCustomKey={Boolean(activeApiKey && activeApiKey.trim().length > 5)}
         activeProviderName={currentProviderConfig.name}
         activeModelName={activeModel}
+        userName={user?.name}
+        userEmail={user?.email}
+        onLogout={logout}
       />
 
       {/* Main Container */}
@@ -629,14 +706,13 @@ export default function App() {
         {activeTab === "pipeline" && (
           <PipelineView
             savedProspects={savedProspects}
-            onRemoveFromPipeline={(id) => {
-              setSavedProspects((prev) => prev.filter((p) => p.id !== id));
-            }}
+            onRemoveFromPipeline={handleRemoveFromPipeline}
             onUpdateStatus={handleUpdateStatus}
             onOpenRefineModal={handleOpenRefineModal}
+            onEmailMyLeads={handleEmailMyLeads}
             onClearAll={() => {
               if (window.confirm("Naozaj chcete vymazať všetky uložené prospekty z Pipeline?")) {
-                setSavedProspects([]);
+                handleClearPipeline();
               }
             }}
           />
