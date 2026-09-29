@@ -9,8 +9,10 @@ import requests
 
 try:
     from pymongo import MongoClient
+    PYMONGO_AVAILABLE = True
 except Exception:  # pragma: no cover
     MongoClient = None
+    PYMONGO_AVAILABLE = False
 
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL")
@@ -81,6 +83,15 @@ def _assert_localized_prospect(prospect: dict, language: str, size_marker: str) 
     assert prospect.get("isMock")
     assert prospect["coldOutreach"]["language"] == language
     assert size_marker in prospect.get("companySize", "")
+
+
+def _lead_ids(response: requests.Response) -> set:
+    return {x.get("id") for x in response.json()["leads"]}
+
+
+def _assert_nonempty_str(value) -> None:
+    assert isinstance(value, str)
+    assert len(value) > 0
 
 
 @pytest.fixture
@@ -184,11 +195,11 @@ class TestLeadsIsolationAndPersistence:
 
         leads_a = session_a.get(f"{base}/api/leads", headers={"x-ui-language": "en"}, timeout=30)
         assert leads_a.status_code == 200
-        assert any(x.get("id") == lead_id for x in leads_a.json()["leads"])
+        assert lead_id in _lead_ids(leads_a)
 
         leads_b = session_b.get(f"{base}/api/leads", headers={"x-ui-language": "en"}, timeout=30)
         assert leads_b.status_code == 200
-        assert all(x.get("id") != lead_id for x in leads_b.json()["leads"])
+        assert lead_id not in _lead_ids(leads_b)
 
     def test_saved_cold_outreach_language_persists_on_patch(self, api_session: requests.Session):
         base = _require_base_url()
@@ -255,23 +266,18 @@ class TestLocalizedMockResponses:
         assert sk_data.get("isMock")
         _assert_localized_prospect(sk_data["prospects"][0], "sk", "zamestnancov")
 
-    def test_audit_and_refine_support_en_and_sk_with_mock_flags(self, api_session: requests.Session):
+    def _audit_company(self, session: requests.Session):
         base = _require_base_url()
-
-        audit_en = api_session.post(
+        return session.post(
             f"{base}/api/audit/company",
             json={"urlOrName": "in-vest.sk", "industry": "Stavebníctvo", "language": "en", "provider": "perplexity"},
             headers=_json_headers("en", {"x-ai-provider": "perplexity", "x-ai-model": "sonar"}),
             timeout=40,
         )
-        assert audit_en.status_code == 200
-        ad_en = audit_en.json()
-        assert ad_en["success"]
-        assert ad_en.get("isMock")
-        assert ad_en["prospect"]["isMock"]
-        assert ad_en["prospect"]["coldOutreach"]["language"] == "en"
 
-        refine_sk = api_session.post(
+    def _refine_pitch(self, session: requests.Session):
+        base = _require_base_url()
+        return session.post(
             f"{base}/api/leads/refine-pitch",
             json={
                 "companyName": "TEST Co",
@@ -285,12 +291,23 @@ class TestLocalizedMockResponses:
             headers=_json_headers("sk", {"x-ai-provider": "perplexity", "x-ai-model": "sonar"}),
             timeout=40,
         )
+
+    def test_audit_and_refine_support_en_and_sk_with_mock_flags(self, api_session: requests.Session):
+        audit_en = self._audit_company(api_session)
+        assert audit_en.status_code == 200
+        ad_en = audit_en.json()
+        assert ad_en["success"]
+        assert ad_en.get("isMock")
+        assert ad_en["prospect"]["isMock"]
+        assert ad_en["prospect"]["coldOutreach"]["language"] == "en"
+
+        refine_sk = self._refine_pitch(api_session)
         assert refine_sk.status_code == 200
         rd_sk = refine_sk.json()
         assert rd_sk["success"]
         assert rd_sk.get("isMock")
-        assert isinstance(rd_sk.get("subject"), str) and len(rd_sk["subject"]) > 0
-        assert isinstance(rd_sk.get("body"), str) and len(rd_sk["body"]) > 0
+        _assert_nonempty_str(rd_sk.get("subject"))
+        _assert_nonempty_str(rd_sk.get("body"))
 
 
 # Google session module coverage: missing/invalid rejection + simulated DB session acceptance.
@@ -314,7 +331,7 @@ class TestGoogleSessionFlow:
         )
         assert invalid.status_code in (401, 500)
 
-    @pytest.mark.skipif(MongoClient is None, reason="pymongo not installed")
+    @pytest.mark.skipif(not PYMONGO_AVAILABLE, reason="pymongo not installed")
     def test_simulated_google_session_cookie_auth_via_mongo(self):
         base = _require_base_url()
         mongo_url = os.environ.get("MONGO_URL")
