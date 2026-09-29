@@ -1633,9 +1633,16 @@ app.get("/api/export/python-script", (req, res) => {
   res.send(PYTHON_MULTI_PROVIDER_SCRIPT);
 });
 
-// Start server with Vite middleware in dev or static files in production
+// Start Vite only for the local development server. Vercel serves the built
+// SPA and cannot proxy Vite's HMR WebSocket, so mounting Vite there causes
+// `/@vite/client` to connect to a socket that never opens.
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  const isLocalDevelopment =
+    process.env.NODE_ENV !== "production" &&
+    process.env.VERCEL !== "1" &&
+    !process.env.VERCEL_ENV;
+
+  if (isLocalDevelopment) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
