@@ -1,0 +1,45 @@
+{
+  "summary": "Completed frontend-only regression and responsive matrix retest. Verified old pipeline crash path with incomplete lead `lead-email-test` is fixed (pipeline renders, tab navigation stable across 320/768/1024/1440 in EN/SK, refine modal opens). Found pageerrors tied to clipboard copy actions in pipeline export tools.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Pipeline export actions (CRM + Markdown copy)",
+        "issue": "Clicking `copy-crm-btn` and `copy-md-btn` triggers unhandled pageerrors: `Failed to execute 'writeText' on 'Clipboard': Write permission denied.`",
+        "affected_selectors": [
+          "[data-testid=\"copy-crm-btn\"]",
+          "[data-testid=\"copy-md-btn\"]"
+        ]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/root/.emergent/automation_output/20260929_210616/console_20260929_210616.log",
+    "/root/.emergent/automation_output/20260929_210724/console_20260929_210724.log"
+  ],
+  "action_items": [
+    "Wrap `navigator.clipboard.writeText(...)` in PipelineView copy handlers with try/catch and show non-crashing UI notice when clipboard permission is denied.",
+    "Keep strict pageerror cleanliness for export actions so responsive sweeps remain green with copy buttons exercised."
+  ],
+  "critical_code_review_comments": [
+    "`PipelineView.copyForCRM` and `PipelineView.copyAllMarkdown` do not handle clipboard rejection; this causes unhandled runtime pageerrors in restricted clipboard contexts.",
+    "Regression fix for partial lead normalization is effective: incomplete saved lead no longer crashes ProspectCard render path."
+  ],
+  "updated_files": [
+    "/app/test_reports/iteration_4.json"
+  ],
+  "success_rate": {
+    "backend": "N/A (frontend-only scope)",
+    "frontend": "95%"
+  },
+  "seed_data_creation": "None. Used existing admin and existing saved lead `lead-email-test`. No delete/modify actions performed on that record.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Completed full matrix on 320/768/1024/1440 and EN/SK for discover/audit/pipeline/guide with proper mobile-vs-desktop navigation selectors; no horizontal overflow and no header/content overlap detected. Provider modal close text localized (EN: Close, SK: Zatvoriť). Refine modal on incomplete record opens in both languages after repeated tab switches. Only failing signal is clipboard pageerrors from pipeline copy buttons.",
+  "rca of the issue": "RCA: responsive timeout suspicion from prior iteration is resolved by the normalizeProspect crash fix and stable tab selector branching per breakpoint. Current failing signal is unrelated to layout: pipeline copy actions call clipboard API without rejection handling. In automation/restricted permission environments, `navigator.clipboard.writeText` rejects and surfaces pageerrors. Mitigation: catch clipboard exceptions, set user-visible fallback notice, and avoid unhandled promise rejection."
+}

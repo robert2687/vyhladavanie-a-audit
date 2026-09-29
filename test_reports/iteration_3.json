@@ -1,0 +1,52 @@
+{
+  "summary": "Completed backend+frontend regression for EN/SK localization, auth flows, Google session handling (simulated), mock AI output labels, pipeline persistence, and build/typecheck. Backend pytest passed 10/10. Frontend core flows passed (language persistence, EN errors, Google redirect contract, invalid session rejection, save/refine/pipeline, provider modal translation, CSV/CRM actions).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/config",
+        "issue": "Code review: getDb() uses fallback DB_NAME default (`process.env.DB_NAME || \"slovak_b2b\"`) instead of strict env-only fail-fast policy."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Responsive full-matrix automation (discover/audit/guide/pipeline/modals across all widths)",
+        "issue": "Automation hit repeated selector visibility/timeouts after viewport switching; login responsive checks passed, but full tab-matrix could not be fully completed in final pass.",
+        "affected_selectors": [
+          "[data-testid=\"tab-discover-btn\"]"
+        ]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/test_iteration3_language_auth_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional hardening: remove DB_NAME fallback default to enforce env-only startup contract.",
+    "Retest responsive tab/mode matrix manually or with stabilized viewport-switch automation due repeated selector timeout in final responsive sweep."
+  ],
+  "critical_code_review_comments": [
+    "server.ts remains very large (~2100 lines); split auth/leads/AI/email routes into focused modules for maintainability and safer regression scope.",
+    "DB_NAME fallback default should be removed to align with strict environment-variable fail-fast requirement.",
+    "No duplicate data-testid values detected in static scan; interactive coverage is generally good."
+  ],
+  "updated_files": [
+    "/app/tests/test_iteration3_language_auth_api.py",
+    "/app/memory/test_credentials.md",
+    "/app/test_reports/iteration_3.json"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10)",
+    "frontend": "~90% (core requested flows passed; one responsive matrix sweep incomplete)"
+  },
+  "seed_data_creation": "Temporary users with prefix iter3_* plus one simulated Google session user/document were created for tests and then cleaned from MongoDB.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Verified: language switch persists across reload/sign-in/sign-out and updates html lang; EN wrong-password message; Google button redirects to auth.emergentagent.com with current-origin redirect; invalid/missing google session rejected; simulated Mongo session_token accepted by /api/auth/me; /api/leads/search,/api/audit/company,/api/leads/refine-pitch EN/SK mock outputs include isMock at response+prospect level; pipeline coldOutreach.language only changes after regenerate+save (not by UI selection alone); provider modal translated in EN with EN validation message; CSV download and CRM copy actions work; mail action is mailto. Limitation: no live AI key, so provider prompt-contract behavior validated only in MOCKED fallback mode.",
+  "rca of the issue": "Unresolved test gap RCA: repeated Playwright timeout on desktop tab selector during rapid viewport switching likely due transient render/layout timing in responsive automation, not a confirmed product bug. Reproduction: iterate 320→768→1024→1440 while toggling tabs quickly. Mitigation: add explicit post-resize wait for stable nav visibility and branch selectors by visible breakpoint before clicks."
+}

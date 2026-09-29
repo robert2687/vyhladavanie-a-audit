@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only regression testing of Slovak B2B Lead Generator. All requested flows passed. RefinePitchModal opens without a React hooks-order crash on multiple prospects; state re-syncs on prospect change (verified: first modal showed KLI-MA Servis subject, reopening on a different card showed IN VEST s.r.o. subject). 'Preformulovať s AI' regenerates content in fallback mode, edits saved via 'Uložiť zmeny'. Instant audit for in-vest.sk generates an audit prospect card. Save-to-Pipeline, status dropdown change, Export CSV, Copy MD, and clear-all-with-confirm all work. API key modal opens, 'Otestovať spojenie' returns graceful validation error 'Google Gemini API kľúč nie je nastavený' (expected in fallback mode). Search history ('Nedávne dopyty') shows recent search/audit items. Metodika & Registre tab renders content and Copy/Download buttons are present. Zero page errors captured during full flow.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "RefinePitchModal hooks-order fix verified: hooks are now declared before the isOpen/prospect guard and the useEffect keyed on prospect?.id correctly resyncs subject/body/language when reopened on a different prospect.",
+    "Consider adding data-testid attributes (in addition to id) to interactive elements (refine buttons, save-to-pipeline buttons, provider tabs, history items) for more robust future automation — currently tests rely on text/title selectors.",
+    "App.tsx and server.ts should be checked for size; if large, split into focused modules (not verified in this pass)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100%"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Frontend served from Node process on port 3000 (API on 8001, same server.ts). App runs in fallback/mock mode with no AI keys — API key validation errors in modal are expected. Interactive selectors mostly use `id` (e.g. #run-search-btn, #tab-audit-btn, #instant-audit-input, #submit-instant-audit-btn, #open-api-key-modal-btn, #test-provider-key-btn, #tab-discover-btn, #tab-pipeline-btn, #tab-guide-btn). Refine modal is triggered from `button[title*='Prispôsobiť']` on each prospect card. Recent-queries panel appears under heading 'Nedávne dopyty' after any search/audit.",
+  "rca of the issue": "N/A — no bugs found in this run. Prior fix (hooks-order in RefinePitchModal, dual-port bind in server.ts) is confirmed working."
+}

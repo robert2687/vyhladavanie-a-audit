@@ -1,15 +1,26 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import { MongoClient, Db } from "mongodb";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import cookieParser from "cookie-parser";
+import crypto from "crypto";
+import { localizeMessages, localizeSample, localeOf, outputLanguageInstruction } from './server/localization';
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
+app.use(localizeMessages);
+app.use(['/api/leads/search', '/api/audit/company', '/api/leads/refine-pitch'], (req, _res, next) => {
+  if (req.body && typeof req.body === 'object') req.body.language = localeOf(req.body.language);
+  next();
+});
 
 let aiClient: GoogleGenAI | null = null;
 let isDefaultGeminiAvailable = Boolean(process.env.GEMINI_API_KEY);
@@ -129,6 +140,9 @@ export function resolveProviderAndKey(req: express.Request): {
   let apiKey: string | undefined =
     (req.headers[`x-${provider}-api-key`] as string) ||
     (req.headers["x-custom-api-key"] as string) ||
+    (Array.isArray(req.headers["x-api-key"])
+      ? req.headers["x-api-key"][0]
+      : (req.headers["x-api-key"] as string | undefined)) ||
     (provider === "gemini" ? (req.headers["x-gemini-api-key"] as string) : undefined) ||
     req.body?.customApiKey ||
     req.body?.apiKey;
@@ -329,6 +343,17 @@ export async function callAIProvider(
   if (provider === "deepseek") {
     const chosenModel = model || "deepseek-chat";
     const isReasoningModel = chosenModel === "deepseek-reasoner";
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: prompt },
+      ],
+      response_format: jsonMode && !isReasoningModel ? { type: "json_object" } : undefined,
+    };
+    if (!isReasoningModel) {
+      bodyPayload.temperature = 0.2;
+    }
     const messages = isReasoningModel
       ? [
           {
@@ -350,9 +375,8 @@ export async function callAIProvider(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: chosenModel,
+        ...bodyPayload,
         messages,
-        temperature: 0.2,
         response_format: jsonMode ? { type: "json_object" } : undefined,
       }),
     });
@@ -368,21 +392,35 @@ export async function callAIProvider(
   // 5. OpenAI
   if (provider === "openai") {
     const chosenModel = model || "gpt-4o";
+    const isReasoningModel = chosenModel.startsWith("o1") || chosenModel.startsWith("o3");
+
+    const messages: any[] = isReasoningModel
+      ? [
+          { role: "developer", content: systemInstruction },
+          { role: "user", content: prompt },
+        ]
+      : [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ];
+
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages,
+      response_format: jsonMode && !isReasoningModel ? { type: "json_object" } : undefined,
+    };
+
+    if (!isReasoningModel) {
+      bodyPayload.temperature = 0.2;
+    }
+
     const data: any = await fetchJsonSafely("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
-        response_format: jsonMode ? { type: "json_object" } : undefined,
-      }),
+      body: JSON.stringify(bodyPayload),
     });
 
     const text = data.choices?.[0]?.message?.content || "";
@@ -425,6 +463,7 @@ export async function callAIProvider(
 
 export interface Prospect {
   id: string;
+  isMock?: boolean;
   companyName: string;
   ico?: string;
   website: string;
@@ -767,7 +806,7 @@ function generateContextualSlovakLeads(params: {
       coldBody = `Hello,\n\nI was looking into your operations in ${cleanRegion}. While reviewing your website, I noticed that potential clients must submit requests through static emails or PDF forms, causing friction and delayed responses.\n\nWe build automated B2B intake portals for SMBs that qualify quote parameters instantly and notify management via SMS/email.\n\nWould you have 10 minutes next Tuesday for a brief intro call?`;
     }
 
-    results.push({
+    results.push(localizeSample({
       ...base,
       id: uniqueId,
       companyName: finalCompanyName,
@@ -786,7 +825,7 @@ function generateContextualSlovakLeads(params: {
       },
       auditTimestamp: new Date().toISOString(),
       status: "new"
-    });
+    }, lang, base.id));
     usedIds.add(uniqueId);
   }
 
@@ -805,7 +844,7 @@ function generateCompanyAuditFallback(urlOrName: string, industry = "Všeobecné
   const encodedName = encodeURIComponent(formattedCompany);
   const dummyIco = "46892103";
 
-  return {
+  return localizeSample({
     id: `audit-${Date.now()}`,
     companyName: `${formattedCompany} (IČO: ${dummyIco})`,
     ico: dummyIco,
@@ -840,7 +879,7 @@ function generateCompanyAuditFallback(urlOrName: string, industry = "Všeobecné
     },
     auditTimestamp: new Date().toISOString(),
     status: "new"
-  };
+  }, language);
 }
 
 // Fallback pitch generator
@@ -852,13 +891,15 @@ function generateRefinedPitchFallback(companyName: string, decisionMaker: string
   if (language === "en") {
     return {
       success: true,
+      isMock: true,
       subject: tone === "formal" ? `Collaboration proposal regarding digital intake for ${cName}` : `Quick question regarding online inquiries on ${cName}`,
-      body: `Hello ${dMaker ? dMaker : ""},\n\nI was reviewing your website and noticed potential friction in how customer quote requests are submitted.\n\nWe help B2B companies deploy ${custom}, saving 4+ hours of administrative work per week while qualifying leads instantly.\n\nWould you be open to a brief 8-minute introductory call next Tuesday?`
+      body: `Hello,\n\nI’m reaching out to discuss how ${cName} handles online customer enquiries. We help B2B companies simplify enquiry forms and notify the right team when a request arrives. Would you be open to a brief introductory call next Tuesday?`
     };
   }
 
   return {
     success: true,
+    isMock: true,
     subject: tone === "formal" ? `Návrh na optimalizáciu klientskych dopytov pre ${cName}` : `Zrýchlenie dopytov a webu pre ${cName}`,
     body: `Dobrý deň${dMaker ? ` ${dMaker}` : ""},\n\nprešiel som si vašu firemnú prezentáciu a evidujem potenciál na zrýchlenie spracovania klientskych dopytov. Pre podobné firmy integrujeme ${custom}, čo šetrí hodiny manuálnej administratívy týždenne.\n\nBoli by ste v priebehu budúceho týždňa otvorení krátkemu 8-minútovému nezáväznému hovoru?`
   };
@@ -979,7 +1020,7 @@ function parseMarkdownProspects(
     );
     const valueProp = valuePropMatch
       ? valuePropMatch[1].replace(/^[-*•]\s*/gm, "").trim()
-      : "Optimalizácia B2B dopytov a nasadenie interaktívneho intake portálu.";
+      : defaultLanguage === 'en' ? 'B2B enquiry optimisation and an interactive intake portal.' : "Optimalizácia B2B dopytov a nasadenie interaktívneho intake portálu.";
 
     // Cold outreach
     const subjectMatch =
@@ -988,7 +1029,7 @@ function parseMarkdownProspects(
       block.match(/-\s*Body:\s*([\s\S]*?)(?=---|```|$)/i) ||
       block.match(/Body:\s*([\s\S]*?)(?=---|```|$)/i);
 
-    const rawCompany = companyMatch ? companyMatch[1].trim() : "Slovenská SMB Firma";
+    const rawCompany = companyMatch ? companyMatch[1].trim() : defaultLanguage === 'en' ? 'Slovak SMB' : "Slovenská SMB Firma";
     const cleanCompany = rawCompany.replace(/\(IČO.*?\)/i, "").trim();
     const ico = rawCompany.match(/IČO:?\s*(\d{8})/i)?.[1] || "";
     const encodedName = encodeURIComponent(cleanCompany);
@@ -999,29 +1040,25 @@ function parseMarkdownProspects(
       companyName: rawCompany,
       ico: ico,
       website: website.startsWith("http") ? website : `https://${website}`,
-      companySize: sizeIndustryMatch ? sizeIndustryMatch[1].trim() : "~10-25 zamestnancov",
+      companySize: sizeIndustryMatch ? sizeIndustryMatch[1].trim() : defaultLanguage === 'en' ? 'Not verified' : 'Neoverené',
       industry: defaultIndustry,
       region: defaultRegion,
-      targetDecisionMaker: decisionMakerMatch ? decisionMakerMatch[1].trim() : "Konateľ (ORSR)",
+      targetDecisionMaker: decisionMakerMatch ? decisionMakerMatch[1].trim() : defaultLanguage === 'en' ? 'Not verified' : 'Neoverené',
       decisionMakerSource: "ORSR.sk & LinkedIn",
-      directContact: directContactMatch ? directContactMatch[1].trim() : "Dostupný v ORSR výpise",
-      contactType: "Priamy kontakt",
+      directContact: directContactMatch ? directContactMatch[1].trim() : defaultLanguage === 'en' ? 'Not verified' : 'Neoverené',
+      contactType: defaultLanguage === 'en' ? 'Business contact' : "Priamy kontakt",
       identifiedWebSignals:
         gaps.length > 0
           ? gaps
-          : [
-              "Chýbajúci interaktívny dopytový intake formulár",
-              "Statický cenník v PDF súbore",
-              "Služby a požiadavky sa riešia neštruktúrovaným e-mailom",
-            ],
+          : [defaultLanguage === 'en' ? 'No website findings verified.' : 'Žiadne overené zistenia o webe.'],
       valueProposition: valueProp,
       coldOutreach: {
         subject: subjectMatch
           ? subjectMatch[1].trim()
-          : `Optimalizácia B2B dopytov pre ${cleanCompany}`,
+          : defaultLanguage === 'en' ? `Online enquiries at ${cleanCompany}` : `Optimalizácia B2B dopytov pre ${cleanCompany}`,
         body: bodyMatch
           ? bodyMatch[1].trim()
-          : `Dobrý deň,\n\nprezrel som si vašu firemnú prezentáciu a evidujem potenciál na zrýchlenie spracovania dopytov. Pre slovenské firmy integrujeme dopytové formuláre, ktoré šetria čas konateľom.\n\nBoli by ste otvorení krátkemu 8-minútovému hovoru?`,
+          : defaultLanguage === 'en' ? `Hello,\n\nWe help B2B companies simplify online enquiries. Would you be open to a brief introductory call?` : `Dobrý deň,\n\nprezrel som si vašu firemnú prezentáciu a evidujem potenciál na zrýchlenie spracovania dopytov. Pre slovenské firmy integrujeme dopytové formuláre, ktoré šetria čas konateľom.\n\nBoli by ste otvorení krátkemu 8-minútovému hovoru?`,
         language: defaultLanguage,
       },
       registers: {
@@ -1072,7 +1109,7 @@ app.post("/api/leads/search", async (req, res) => {
       success: true,
       isMock: true,
       provider,
-      message: `Vyhľadávanie bolo skompletizované cez overenú databázu slovenských SMB subjektov (provider ${provider.toUpperCase()}).`,
+      message: "Ukážkové výsledky — nejde o živé vyhľadávanie ani overené kontakty. Pre živé výsledky nastavte AI kľúč.",
       prospects: generated,
     });
   }
@@ -1122,7 +1159,7 @@ Please return the results matching the Universal System Instructions output sche
       provider,
       apiKey,
       model,
-      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION + outputLanguageInstruction(language),
       prompt,
     });
 
@@ -1134,22 +1171,16 @@ Please return the results matching the Universal System Instructions output sche
       if (parsedMarkdown.length > 0) {
         prospects = parsedMarkdown;
       } else {
-        console.warn(`AI (${provider}) returned non-JSON/non-markdown schema, using contextual engine.`);
-        prospects = generateContextualSlovakLeads({
-          region,
-          industry,
-          minEmployees,
-          maxEmployees,
-          count,
-          customKeywords,
-          language,
-        });
+        throw new Error('Could not parse AI search response.');
       }
     } else {
       prospects = prospects.map((p: any, idx: number) => {
         const cleanName = (p.companyName || "").replace(/\(IČO.*?\)/i, "").trim();
         const encodedName = encodeURIComponent(cleanName);
-        const ico = p.ico || (p.companyName.match(/IČO:?\s*(\d{8})/i)?.[1] || "");
+        const ico = p.ico || (p.companyName?.match(/IČO:?\s*(\d{8})/i)?.[1] || "");
+        if (!p.companyName || !p.website || !p.companySize || !p.industry || !p.targetDecisionMaker || !p.directContact || !Array.isArray(p.identifiedWebSignals) || !p.valueProposition || !p.coldOutreach?.subject || !p.coldOutreach?.body) {
+          throw new Error('AI returned an incomplete prospect.');
+        }
         return {
           id: `lead-${Date.now()}-${idx}`,
           companyName: p.companyName || "Slovenská SMB Spoločnosť",
@@ -1161,7 +1192,7 @@ Please return the results matching the Universal System Instructions output sche
           targetDecisionMaker: p.targetDecisionMaker || "Konateľ spoločnosti (ORSR)",
           decisionMakerSource: p.decisionMakerSource || "ORSR.sk / FinStat",
           directContact: p.directContact || "Dostupný v ORSR výpise",
-          contactType: p.contactType || "Priamy kontakt",
+          contactType: p.contactType || (language === 'en' ? 'Business contact' : "Priamy kontakt"),
           identifiedWebSignals: Array.isArray(p.identifiedWebSignals) ? p.identifiedWebSignals : [
             "Chýbajúci priamy dopytový formulár na webe",
             "Cenník služieb viazaný v statickom PDF",
@@ -1209,7 +1240,7 @@ Please return the results matching the Universal System Instructions output sche
       isMock: true,
       provider,
       prospects: fallbackList,
-      message: `Vyhľadávanie bolo skompletizované s overenou databázou slovenských SMB subjektov (${error?.message ? error.message.slice(0, 100) : "lokálna báza"}).`,
+      message: "Ukážkové výsledky — nejde o živé vyhľadávanie ani overené kontakty. Pre živé výsledky nastavte AI kľúč.",
     });
   }
 });
@@ -1232,7 +1263,7 @@ app.post("/api/audit/company", async (req, res) => {
         isMock: true,
         provider,
         prospect: sampleAudit,
-        message: "Audit bol vygenerovaný s overenou analýzou digitálnych bariér pre slovenský trh.",
+        message: "Ukážkový audit — nejde o overenú analýzu webu.",
       });
     }
 
@@ -1283,7 +1314,7 @@ Return ONLY a valid JSON object with this exact structure:
       provider,
       apiKey,
       model,
-      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION + outputLanguageInstruction(language),
       prompt: auditPrompt,
       jsonMode: true,
     });
@@ -1302,6 +1333,9 @@ Return ONLY a valid JSON object with this exact structure:
     const cleanName = (parsed.companyName || urlOrName).replace(/\(IČO.*?\)/i, "").trim();
     const encodedName = encodeURIComponent(cleanName);
     const ico = parsed.ico || (parsed.companyName?.match(/IČO:?\s*(\d{8})/i)?.[1] || "");
+    if (!parsed.companyName || !parsed.website || !parsed.companySize || !parsed.industry || !parsed.targetDecisionMaker || !parsed.directContact || !Array.isArray(parsed.identifiedWebSignals) || !parsed.valueProposition || !parsed.coldOutreach?.subject || !parsed.coldOutreach?.body) {
+      throw new Error('AI returned an incomplete audit.');
+    }
 
     const prospect: Prospect = {
       id: `audit-${Date.now()}`,
@@ -1314,7 +1348,7 @@ Return ONLY a valid JSON object with this exact structure:
       targetDecisionMaker: parsed.targetDecisionMaker || "Konateľ spoločnosti (ORSR)",
       decisionMakerSource: parsed.decisionMakerSource || "ORSR.sk / FinStat",
       directContact: parsed.directContact || "Overiť v ORSR.sk výpise",
-      contactType: parsed.contactType || "Priamy kontakt",
+      contactType: parsed.contactType || (language === 'en' ? 'Business contact' : "Priamy kontakt"),
       identifiedWebSignals: Array.isArray(parsed.identifiedWebSignals) ? parsed.identifiedWebSignals : [
         "Chýbajúci interaktívny dopytový formulár",
         "Statický cenník v PDF súbore",
@@ -1350,7 +1384,7 @@ Return ONLY a valid JSON object with this exact structure:
       success: true,
       isMock: true,
       prospect: sampleAudit,
-      message: "Audit bol vygenerovaný s overenou analýzou digitálnych bariér pre slovenský trh.",
+      message: "Ukážkový audit — nejde o overenú analýzu webu.",
     });
   }
 });
@@ -1398,12 +1432,13 @@ Return JSON:
       provider,
       apiKey,
       model,
-      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION + outputLanguageInstruction(language),
       prompt,
       jsonMode: true,
     });
 
     const parsed = extractJsonFromText(aiResult.text || "");
+    if (!parsed?.subject || !parsed?.body) throw new Error('Could not parse AI pitch response.');
     res.json({
       success: true,
       subject: parsed?.subject || `Dopyty a web pre ${companyName}`,
@@ -1449,7 +1484,7 @@ app.post("/api/validate-key", async (req, res) => {
     if (!key && provider !== "gemini") {
       return res.status(400).json({
         valid: false,
-        message: `Nebol zadaný žiadny API kľúč pre ${provider.toUpperCase()}.`,
+        message: "Nebol zadaný žiadny API kľúč.",
       });
     }
 
@@ -1466,7 +1501,7 @@ app.post("/api/validate-key", async (req, res) => {
     if (result.text && result.text.length > 0) {
       return res.json({
         valid: true,
-        message: `API kľúč pre ${provider.toUpperCase()} (${result.model}) je platný a úspešne otestovaný!`,
+        message: "API kľúč je platný a spojenie funguje.",
         provider,
         model: result.model,
       });
@@ -1481,7 +1516,7 @@ app.post("/api/validate-key", async (req, res) => {
         ? "Tento API kľúč bol nahlásený ako vyzradený (leaked). Použite prosím iný aktívny kľúč."
         : errMsg.includes("API_KEY_INVALID") || errMsg.includes("401")
         ? "Neplatný API kľúč alebo chybné oprávnenia. Skontrolujte či je skopírovaný celý reťazec."
-        : `Chyba pri overení spojenia: ${errMsg.slice(0, 160)}`
+        : "Chyba pri overení spojenia. Skontrolujte kľúč, model a oprávnenia."
     });
   }
 });
@@ -1607,11 +1642,457 @@ app.get("/api/export/python-script", (req, res) => {
   res.send(PYTHON_MULTI_PROVIDER_SCRIPT);
 });
 
+// =====================================================================
+// Auth + MongoDB + Cloud Pipeline + Transactional Email (added features)
+// =====================================================================
+
+let _db: Db | null = null;
+async function getDb(): Promise<Db> {
+  if (_db) return _db;
+  const url = process.env.MONGO_URL;
+  if (!url) throw new Error("MONGO_URL is not set");
+  const client = new MongoClient(url);
+  await client.connect();
+  if (!process.env.DB_NAME) throw new Error("DB_NAME is not set");
+  _db = client.db(process.env.DB_NAME);
+  await _db.collection("users").createIndex({ email: 1 }, { unique: true });
+  await _db.collection("sessions").createIndex({ session_token: 1 });
+  await _db.collection("leads").createIndex({ user_id: 1, leadId: 1 }, { unique: true });
+  return _db;
+}
+
+const JWT_ALGORITHM = "HS256" as const;
+const ACCESS_TTL_SEC = 15 * 60;
+const REFRESH_TTL_SEC = 7 * 24 * 60 * 60;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getJwtSecret(): string {
+  const s = process.env.JWT_SECRET;
+  if (!s) throw new Error("JWT_SECRET is not set");
+  return s;
+}
+
+function createAccessToken(userId: string, email: string): string {
+  return jwt.sign({ sub: userId, email, type: "access" }, getJwtSecret(), {
+    algorithm: JWT_ALGORITHM,
+    expiresIn: ACCESS_TTL_SEC,
+  });
+}
+function createRefreshToken(userId: string): string {
+  return jwt.sign({ sub: userId, type: "refresh" }, getJwtSecret(), {
+    algorithm: JWT_ALGORITHM,
+    expiresIn: REFRESH_TTL_SEC,
+  });
+}
+
+const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: "none" as const, path: "/" };
+
+function setAuthCookies(res: express.Response, userId: string, email: string) {
+  res.cookie("access_token", createAccessToken(userId, email), { ...COOKIE_BASE, maxAge: ACCESS_TTL_SEC * 1000 });
+  res.cookie("refresh_token", createRefreshToken(userId), { ...COOKIE_BASE, maxAge: REFRESH_TTL_SEC * 1000 });
+}
+function clearAuthCookies(res: express.Response) {
+  res.clearCookie("access_token", COOKIE_BASE);
+  res.clearCookie("refresh_token", COOKIE_BASE);
+  res.clearCookie("session_token", COOKIE_BASE);
+}
+
+function publicUser(u: any) {
+  if (!u) return null;
+  return {
+    user_id: u.user_id,
+    email: u.email,
+    name: u.name || "",
+    picture: u.picture || "",
+    role: u.role || "user",
+    auth_provider: u.auth_provider || "password",
+  };
+}
+
+// Resolve the current user from JWT access token (cookie/Bearer) or Emergent session token.
+async function getCurrentUser(req: express.Request): Promise<any | null> {
+  const db = await getDb();
+  const authHeader = (req.headers["authorization"] as string) || "";
+  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+  // 1) JWT access token
+  const accessToken = req.cookies?.access_token || bearer;
+  if (accessToken) {
+    try {
+      const payload: any = jwt.verify(accessToken, getJwtSecret());
+      if (payload?.type === "access" && payload?.sub) {
+        const user = await db.collection("users").findOne({ user_id: payload.sub }, { projection: { _id: 0 } });
+        if (user) return user;
+      }
+    } catch {
+      // fall through to session token
+    }
+  }
+
+  // 2) Emergent session token
+  const sessionToken = req.cookies?.session_token || bearer;
+  if (sessionToken) {
+    const sess = await db.collection("sessions").findOne({ session_token: sessionToken });
+    if (sess) {
+      let expiresAt = sess.expires_at;
+      if (typeof expiresAt === "string") expiresAt = new Date(expiresAt);
+      if (expiresAt && expiresAt.getTime() > Date.now()) {
+        const user = await db.collection("users").findOne({ user_id: sess.user_id }, { projection: { _id: 0 } });
+        if (user) return user;
+      }
+    }
+  }
+  return null;
+}
+
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
+    (req as any).user = user;
+    next();
+  } catch (e: any) {
+    res.status(500).json({ error: "Chyba pri overení prihlásenia." });
+  }
+}
+
+async function seedAdmin() {
+  try {
+    const db = await getDb();
+    const email = (process.env.ADMIN_EMAIL || "").toLowerCase();
+    const password = process.env.ADMIN_PASSWORD || "";
+    if (!email || !password) return;
+    const existing = await db.collection("users").findOne({ email });
+    if (!existing) {
+      await db.collection("users").insertOne({
+        user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+        email,
+        name: "Admin",
+        role: "admin",
+        auth_provider: "password",
+        password_hash: bcrypt.hashSync(password, 10),
+        created_at: new Date(),
+      });
+      console.log(`[seed] Admin user created: ${email}`);
+    } else if (existing.password_hash && !bcrypt.compareSync(password, existing.password_hash)) {
+      await db.collection("users").updateOne({ email }, { $set: { password_hash: bcrypt.hashSync(password, 10) } });
+    }
+  } catch (e: any) {
+    console.warn("[seed] admin seeding skipped:", e?.message || e);
+  }
+}
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+// ---- Auth routes ----
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const db = await getDb();
+    const name = (req.body?.name || "").trim();
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password || "";
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "Zadajte platný e-mail." });
+    if (password.length < 8) return res.status(400).json({ error: "Heslo musí mať aspoň 8 znakov." });
+    const exists = await db.collection("users").findOne({ email });
+    if (exists) return res.status(409).json({ error: "Používateľ s týmto e-mailom už existuje." });
+    const user = {
+      user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+      email,
+      name: name || email.split("@")[0],
+      role: "user",
+      auth_provider: "password",
+      password_hash: bcrypt.hashSync(password, 10),
+      created_at: new Date(),
+    };
+    await db.collection("users").insertOne(user);
+    setAuthCookies(res, user.user_id, user.email);
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Registrácia zlyhala. Skúste znova." });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const db = await getDb();
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password || "";
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
+    const identifier = `${ip}:${email}`;
+
+    const attempt = await db.collection("login_attempts").findOne({ identifier });
+    if (attempt && attempt.count >= 5 && attempt.lockedUntil && new Date(attempt.lockedUntil).getTime() > Date.now()) {
+      return res.status(429).json({ error: "Príliš veľa pokusov. Skúste to o 15 minút." });
+    }
+
+    const user = await db.collection("users").findOne({ email });
+    const ok = user && user.password_hash && bcrypt.compareSync(password, user.password_hash);
+    if (!ok) {
+      const count = (attempt?.count || 0) + 1;
+      await db.collection("login_attempts").updateOne(
+        { identifier },
+        { $set: { identifier, count, lockedUntil: count >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null } },
+        { upsert: true }
+      );
+      return res.status(401).json({ error: "Nesprávny e-mail alebo heslo." });
+    }
+    await db.collection("login_attempts").deleteOne({ identifier });
+    setAuthCookies(res, user.user_id, user.email);
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Prihlásenie zlyhalo. Skúste znova." });
+  }
+});
+
+// Emergent-managed Google login: exchange session_id for a session token.
+// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+app.post("/api/auth/google/session", async (req, res) => {
+  try {
+    const db = await getDb();
+    const sessionId = req.body?.session_id;
+    if (!sessionId) return res.status(400).json({ error: "Chýba session_id." });
+
+    const resp = await fetch("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data", {
+      method: "GET",
+      headers: { "X-Session-ID": sessionId },
+    });
+    if (!resp.ok) return res.status(401).json({ error: "Google prihlásenie sa nepodarilo overiť." });
+    const data: any = await resp.json();
+    const email = (data.email || "").trim().toLowerCase();
+    if (!email) return res.status(401).json({ error: "Google účet neposkytol e-mail." });
+    if (typeof data.session_token !== 'string' || !data.session_token) return res.status(401).json({ error: "Google prihlásenie sa nepodarilo overiť." });
+
+    let user: any = await db.collection("users").findOne({ email });
+    if (!user) {
+      user = {
+        user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+        email,
+        name: data.name || email.split("@")[0],
+        picture: data.picture || "",
+        role: "user",
+        auth_provider: "google",
+        created_at: new Date(),
+      };
+      await db.collection("users").insertOne(user as any);
+    } else if (data.picture && user.picture !== data.picture) {
+      await db.collection("users").updateOne({ email }, { $set: { picture: data.picture } });
+    }
+
+    const sessionToken = data.session_token;
+    await db.collection("sessions").insertOne({
+      user_id: user.user_id,
+      session_token: sessionToken,
+      expires_at: new Date(Date.now() + SESSION_TTL_MS),
+      created_at: new Date(),
+    });
+    res.cookie("session_token", sessionToken, { ...COOKIE_BASE, maxAge: SESSION_TTL_MS });
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Google prihlásenie zlyhalo." });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const token = req.cookies?.session_token;
+    if (token) {
+      const db = await getDb();
+      await db.collection("sessions").deleteOne({ session_token: token });
+    }
+  } catch {
+    // ignore
+  }
+  clearAuthCookies(res);
+  res.json({ success: true });
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  const user = await getCurrentUser(req);
+  if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
+  res.json(publicUser(user));
+});
+
+app.post("/api/auth/refresh", async (req, res) => {
+  try {
+    const token = req.cookies?.refresh_token;
+    if (!token) return res.status(401).json({ error: "Chýba refresh token." });
+    const payload: any = jwt.verify(token, getJwtSecret());
+    if (payload?.type !== "refresh" || !payload?.sub) return res.status(401).json({ error: "Neplatný token." });
+    const db = await getDb();
+    const user = await db.collection("users").findOne({ user_id: payload.sub }, { projection: { _id: 0 } });
+    if (!user) return res.status(401).json({ error: "Používateľ neexistuje." });
+    res.cookie("access_token", createAccessToken(user.user_id, user.email), { ...COOKIE_BASE, maxAge: ACCESS_TTL_SEC * 1000 });
+    res.json({ success: true, user: publicUser(user) });
+  } catch {
+    res.status(401).json({ error: "Neplatný alebo expirovaný token." });
+  }
+});
+
+// ---- Cloud Pipeline (per-user saved leads) ----
+app.get("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const docs = await db
+    .collection("leads")
+    .find({ user_id: user.user_id }, { projection: { _id: 0, user_id: 0 } })
+    .sort({ saved_at: -1 })
+    .toArray();
+  res.json({ success: true, leads: docs.map((d: any) => d.lead) });
+});
+
+app.post("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const lead = req.body?.lead;
+  if (!lead || !lead.id) return res.status(400).json({ error: "Neplatný prospekt." });
+  const saved = { ...lead, status: lead.status === "new" ? "saved" : lead.status || "saved" };
+  await db.collection("leads").updateOne(
+    { user_id: user.user_id, leadId: lead.id },
+    { $set: { user_id: user.user_id, leadId: lead.id, lead: saved, saved_at: new Date() } },
+    { upsert: true }
+  );
+  res.json({ success: true, lead: saved });
+});
+
+app.patch("/api/leads/:leadId", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const existing = await db.collection("leads").findOne({ user_id: user.user_id, leadId: req.params.leadId });
+  if (!existing) return res.status(404).json({ error: "Prospekt sa nenašiel." });
+  const updatedLead = { ...existing.lead };
+  if (req.body?.status) updatedLead.status = req.body.status;
+  if (typeof req.body?.notes === "string") updatedLead.notes = req.body.notes;
+  if (req.body?.coldOutreach) updatedLead.coldOutreach = { ...updatedLead.coldOutreach, ...req.body.coldOutreach };
+  await db.collection("leads").updateOne(
+    { user_id: user.user_id, leadId: req.params.leadId },
+    { $set: { lead: updatedLead, saved_at: existing.saved_at || new Date() } }
+  );
+  res.json({ success: true, lead: updatedLead });
+});
+
+app.delete("/api/leads/:leadId", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  await db.collection("leads").deleteOne({ user_id: user.user_id, leadId: req.params.leadId });
+  res.json({ success: true });
+});
+
+app.delete("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  await db.collection("leads").deleteMany({ user_id: user.user_id });
+  res.json({ success: true });
+});
+
+// ---- Transactional email: send the logged-in user THEIR OWN saved leads ----
+// Guardrail note: cold outreach to prospects is NOT sent via the managed provider
+// (prohibited). This route emails the authenticated account owner their own data only.
+const EMAIL_BASE_URL = "https://integrations.emergentagent.com";
+
+function esc(s: any): string {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function assertSafeEmail(subject: string, html: string) {
+  if (/<\s*(form|input|textarea|select)\b/i.test(html)) throw new Error("No forms/inputs allowed in email");
+  const urls = [...html.matchAll(/(?:href|src)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
+  for (const url of urls) {
+    const low = url.trim().toLowerCase();
+    if (low.startsWith("mailto:") || low.startsWith("tel:") || low.startsWith("cid:") || low.startsWith("#")) continue;
+    if (!low.startsWith("https://")) throw new Error(`Email links must be absolute https: ${url}`);
+  }
+}
+
+async function sendEmail(opts: { to: string; subject: string; html: string; replyTo?: string }) {
+  assertSafeEmail(opts.subject, opts.html);
+  const key = process.env.EMERGENT_EMAIL_KEY;
+  const fromName = process.env.EMAIL_FROM_NAME;
+  if (!key || !fromName) throw new Error("Email is not configured");
+  const payload: any = { to: [opts.to], subject: opts.subject, html: opts.html, from_name: fromName };
+  const replyTo = opts.replyTo || process.env.EMAIL_REPLY_TO;
+  if (replyTo) payload.contact_email = replyTo;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  let resp: Response;
+  try {
+    resp = await fetch(`${EMAIL_BASE_URL}/api/v1/email/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Email-Key": key },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (e: any) {
+    throw new Error(e?.name === "AbortError" ? "E-mailová služba neodpovedala včas." : "E-mailovú službu sa nepodarilo kontaktovať.");
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(`Email send failed (${resp.status}): ${t.slice(0, 120)}`);
+  }
+  const data: any = await resp.json().catch(() => ({}));
+  return data?.id || null;
+}
+
+app.post("/api/leads/email-me", requireAuth, async (req, res) => {
+  try {
+    const db = await getDb();
+    const user = (req as any).user;
+    const docs = await db
+      .collection("leads")
+      .find({ user_id: user.user_id }, { projection: { _id: 0 } })
+      .sort({ saved_at: -1 })
+      .toArray();
+    if (docs.length === 0) return res.status(400).json({ error: "Vo vašom Pipeline nie sú žiadne uložené firmy." });
+
+    const brand = esc(process.env.EMAIL_FROM_NAME || "Slovak B2B Lead Generator");
+    const rows = docs
+      .map((d: any) => {
+        const p = d.lead || {};
+        return `<tr>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.companyName)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.industry)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.directContact)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.status)}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const html = `<table role="presentation" width="100%" style="max-width:720px"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#222">
+      <h2 style="margin:0 0 4px">Vaše uložené B2B prospekty</h2>
+      <p style="margin:0 0 16px;color:#666;font-size:14px">Prehľad ${docs.length} firiem z vášho Pipeline v aplikácii ${brand}.</p>
+      <table role="presentation" width="100%" style="border-collapse:collapse">
+        <tr>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Firma</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Odvetvie</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Kontakt</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Stav</th>
+        </tr>
+        ${rows}
+      </table>
+      <p style="font-size:12px;color:#999;margin-top:20px">Odoslané službou ${brand} na vašu žiadosť. Nikdy vás nežiadame o heslo ani platobné údaje e-mailom.</p>
+    </td></tr></table>`;
+
+    const id = await sendEmail({ to: user.email, subject: `Vaše uložené B2B prospekty (${docs.length}) — ${process.env.EMAIL_FROM_NAME}`, html });
+    res.json({ success: true, email_id: id, count: docs.length, sentTo: user.email });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || "E-mail sa nepodarilo odoslať." });
+  }
+});
+
 // Start server with Vite middleware in dev or static files in production
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // Allow the hosted preview domain to reach the Vite dev server.
+        allowedHosts: true,
+        // HMR websocket is unreliable behind the preview proxy; disable it.
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -1623,9 +2104,24 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
-  });
+  // Bind the frontend port (3000) and the API port (8001). The hosting proxy
+  // routes "/api/*" to 8001 and everything else to 3000, and the same Express
+  // app serves both, so binding both ports makes the app work end-to-end.
+  const ports = Array.from(
+    new Set([PORT, Number(process.env.API_PORT) || 8001]),
+  );
+  for (const p of ports) {
+    app.listen(p, "0.0.0.0", () => {
+      console.log(`B2B Slovak Lead Generation server running on port ${p}`);
+    });
+  }
+
+  // Seed the admin account (idempotent) once the server is up.
+  seedAdmin();
 }
 
-startServer();
+export default app;
+
+if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {
+  startServer();
+}
