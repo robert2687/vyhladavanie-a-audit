@@ -11,8 +11,8 @@ import { localizeMessages, localizeSample, localeOf, outputLanguageInstruction }
 
 dotenv.config();
 
-const app = express();
-const PORT = 3000;
+export const app = express();
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
@@ -2083,6 +2083,7 @@ app.post("/api/leads/email-me", requireAuth, async (req, res) => {
 
 // Start server with Vite middleware in dev or static files in production
 async function startServer() {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -2096,7 +2097,7 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -2104,6 +2105,11 @@ async function startServer() {
     });
   }
 
+  if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
+    });
+  }
   // Bind the frontend port (3000) and the API port (8001). The hosting proxy
   // routes "/api/*" to 8001 and everything else to 3000, and the same Express
   // app serves both, so binding both ports makes the app work end-to-end.
@@ -2120,6 +2126,14 @@ async function startServer() {
   seedAdmin();
 }
 
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+if (process.env.NODE_ENV !== "test") {
+export default app;
+// Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
+if (!process.env.VERCEL) {
 export default app;
 
 if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {

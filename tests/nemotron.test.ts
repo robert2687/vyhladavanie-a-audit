@@ -23,6 +23,7 @@ globalThis.fetch = (async (url: string, options: any) => {
 }) as any;
 
 async function runNemotronTests() {
+  console.log("Testing callAIProvider Nemotron/NVIDIA payloads...");
   console.log("Testing callAIProvider Nemotron payloads...");
 
   // Test 1: NVIDIABuild-Autogen-33 model
@@ -74,6 +75,7 @@ async function runNemotronTests() {
   assert.strictEqual(res1.text, "Nemotron Response");
   console.log("✓ nemotron-3.5-lightning-30b-a3b default payload test passed");
 
+  // Test 2: Legacy / Custom Nemotron model
   // Test 3: Legacy Nemotron model (nvidia/llama-3.1-nemotron-70b-instruct)
   lastFetchCall = null;
   const res2 = await callAIProvider({
@@ -92,7 +94,7 @@ async function runNemotronTests() {
   assert.strictEqual(res2.model, "nvidia/llama-3.1-nemotron-70b-instruct");
   console.log("✓ llama-3.1-nemotron-70b-instruct payload test passed");
 
-  console.log("ALL NEMOTRON TESTS PASSED!");
+  console.log("ALL NEMOTRON TESTS PASSED SUCCESSFULLY!");
   process.exit(0);
 }
 
