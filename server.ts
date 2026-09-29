@@ -5,8 +5,8 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const app = express();
-const PORT = 3000;
+export const app = express();
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -1655,6 +1655,8 @@ async function startServer() {
   });
 }
 
+// Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
+if (!process.env.VERCEL) {
 export default app;
 
 if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {
