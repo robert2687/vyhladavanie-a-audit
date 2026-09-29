@@ -1652,6 +1652,12 @@ async function startServer() {
       },
       appType: "spa",
     });
+    // The preview proxy cannot forward Vite's HMR WebSocket. Vite may still
+    // inject its client script, so serve an inert module to prevent a socket
+    // connection from being attempted in the preview environment.
+    app.get('/@vite/client', (_req, res) => {
+      res.type('application/javascript').send('');
+    });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");

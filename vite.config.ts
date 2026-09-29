@@ -5,6 +5,19 @@ import path from 'path';
 import {defineConfig, Plugin} from 'vite';
 
 // LINT.IfChange(aistudio_media_plugin)
+function disableHmrClientPlugin(): Plugin {
+  return {
+    name: 'disable-vite-hmr-client',
+    enforce: 'post',
+    transformIndexHtml(html) {
+      return html.replace(
+        /\s*<script[^>]*src=["']\/@vite\/client(?:\?[^"']*)?["'][^>]*><\/script>\s*/g,
+        '',
+      );
+    },
+  };
+}
+
 function aistudioMediaPlugin(): Plugin {
   return {
     name: 'vite-plugin-aistudio-media',
@@ -66,7 +79,7 @@ function aistudioMediaPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss(), aistudioMediaPlugin()],
+    plugins: [react(), tailwindcss(), disableHmrClientPlugin(), aistudioMediaPlugin()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
