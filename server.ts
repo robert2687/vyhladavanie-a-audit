@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -1664,6 +1664,6 @@ async function startServer() {
 
 export default app;
 
-if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {
-  startServer();
-}
+  if (process.env.VERCEL !== "1") {
+    startServer();
+  }
