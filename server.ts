@@ -5,8 +5,8 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const app = express();
-const PORT = 3000;
+export const app = express();
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -128,6 +128,9 @@ export function resolveProviderAndKey(req: express.Request): {
   let apiKey: string | undefined =
     (req.headers[`x-${provider}-api-key`] as string) ||
     (req.headers["x-custom-api-key"] as string) ||
+    (Array.isArray(req.headers["x-api-key"])
+      ? req.headers["x-api-key"][0]
+      : (req.headers["x-api-key"] as string | undefined)) ||
     (provider === "gemini" ? (req.headers["x-gemini-api-key"] as string) : undefined) ||
     req.body?.customApiKey ||
     req.body?.apiKey;
@@ -328,6 +331,17 @@ export async function callAIProvider(
   if (provider === "deepseek") {
     const chosenModel = model || "deepseek-chat";
     const isReasoningModel = chosenModel === "deepseek-reasoner";
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: prompt },
+      ],
+      response_format: jsonMode && !isReasoningModel ? { type: "json_object" } : undefined,
+    };
+    if (!isReasoningModel) {
+      bodyPayload.temperature = 0.2;
+    }
     const messages = isReasoningModel
       ? [
           {
@@ -349,9 +363,8 @@ export async function callAIProvider(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: chosenModel,
+        ...bodyPayload,
         messages,
-        temperature: 0.2,
         response_format: jsonMode ? { type: "json_object" } : undefined,
       }),
     });
@@ -367,21 +380,35 @@ export async function callAIProvider(
   // 5. OpenAI
   if (provider === "openai") {
     const chosenModel = model || "gpt-4o";
+    const isReasoningModel = chosenModel.startsWith("o1") || chosenModel.startsWith("o3");
+
+    const messages: any[] = isReasoningModel
+      ? [
+          { role: "developer", content: systemInstruction },
+          { role: "user", content: prompt },
+        ]
+      : [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ];
+
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages,
+      response_format: jsonMode && !isReasoningModel ? { type: "json_object" } : undefined,
+    };
+
+    if (!isReasoningModel) {
+      bodyPayload.temperature = 0.2;
+    }
+
     const data: any = await fetchJsonSafely("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
-        response_format: jsonMode ? { type: "json_object" } : undefined,
-      }),
+      body: JSON.stringify(bodyPayload),
     });
 
     const text = data.choices?.[0]?.message?.content || "";
@@ -1609,6 +1636,7 @@ app.get("/api/export/python-script", (req, res) => {
 // Start server with Vite middleware in dev or static files in production
 async function startServer() {
   if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+  if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1635,3 +1663,10 @@ if (!process.env.VERCEL) {
 }
 
 export default app;
+// Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
+if (!process.env.VERCEL) {
+export default app;
+
+if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {
+  startServer();
+}

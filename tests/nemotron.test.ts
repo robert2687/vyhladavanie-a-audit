@@ -24,8 +24,35 @@ globalThis.fetch = (async (url: string, options: any) => {
 
 async function runNemotronTests() {
   console.log("Testing callAIProvider Nemotron/NVIDIA payloads...");
+  console.log("Testing callAIProvider Nemotron payloads...");
 
-  // Test 1: Default Nemotron model (nvidia/nemotron-3.5-lightning-30b-a3b)
+  // Test 1: NVIDIABuild-Autogen-33 model
+  lastFetchCall = null;
+  const resultAutogen = await callAIProvider({
+    provider: "nemotron",
+    apiKey: "nvapi-test-key",
+    model: "NVIDIABuild-Autogen-33",
+    systemInstruction: "You are a helpful assistant.",
+    prompt: "Test prompt for Autogen model",
+  });
+
+  assert.ok(lastFetchCall, "fetch should have been called");
+  assert.strictEqual(
+    lastFetchCall!.url,
+    "https://integrate.api.nvidia.com/v1/chat/completions"
+  );
+  const autogenBody = JSON.parse(lastFetchCall!.options.body);
+  assert.strictEqual(autogenBody.model, "NVIDIABuild-Autogen-33");
+  assert.strictEqual(resultAutogen.model, "NVIDIABuild-Autogen-33");
+  assert.strictEqual(resultAutogen.provider, "nemotron");
+  assert.strictEqual(resultAutogen.text, "Nemotron Response");
+  assert.strictEqual(
+    lastFetchCall!.options.headers["Authorization"],
+    "Bearer nvapi-test-key"
+  );
+  console.log("✓ NVIDIABuild-Autogen-33 nemotron test passed");
+
+  // Test 2: Default Nemotron model (nvidia/nemotron-3.5-lightning-30b-a3b)
   lastFetchCall = null;
   const res1 = await callAIProvider({
     provider: "nemotron",
@@ -49,6 +76,7 @@ async function runNemotronTests() {
   console.log("✓ nemotron-3.5-lightning-30b-a3b default payload test passed");
 
   // Test 2: Legacy / Custom Nemotron model
+  // Test 3: Legacy Nemotron model (nvidia/llama-3.1-nemotron-70b-instruct)
   lastFetchCall = null;
   const res2 = await callAIProvider({
     provider: "nemotron",
