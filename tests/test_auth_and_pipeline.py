@@ -1,8 +1,27 @@
 """Backend tests: auth + pipeline for Slovak B2B Lead Generator."""
-import os, uuid, requests, pytest
+import os
+import uuid
 
-BASE = "https://cf833342-de57-4fec-bf2e-8e458982335d.preview.emergentagent.com"
-ADMIN = {"email": "admin@slovakb2b.sk", "password": "Admin12345"}
+import pytest
+import requests
+
+BASE = (os.environ.get("REACT_APP_BACKEND_URL") or "").rstrip("/")
+ADMIN = {
+    "email": os.environ.get("TEST_ADMIN_EMAIL"),
+    "password": os.environ.get("TEST_ADMIN_PASSWORD"),
+}
+
+
+def _require_base() -> str:
+    if not BASE:
+        pytest.skip("REACT_APP_BACKEND_URL is not set")
+    return BASE
+
+
+def _require_admin() -> dict:
+    if not ADMIN["email"] or not ADMIN["password"]:
+        pytest.skip("TEST_ADMIN_EMAIL / TEST_ADMIN_PASSWORD are not set")
+    return ADMIN
 
 
 @pytest.fixture
@@ -12,84 +31,102 @@ def s():
 
 @pytest.fixture
 def admin_session(s):
-    r = s.post(f"{BASE}/api/auth/login", json=ADMIN)
+    base = _require_base()
+    r = s.post(f"{base}/api/auth/login", json=_require_admin())
     assert r.status_code == 200, r.text
     return s
 
 
+def _leads(session):
+    base = _require_base()
+    r = session.get(f"{base}/api/leads")
+    assert r.status_code == 200
+    data = r.json()
+    return data["leads"] if isinstance(data, dict) else data
+
+
+def _create_lead(session):
+    base = _require_base()
+    lead = {
+        "id": f"TEST_{uuid.uuid4().hex[:8]}",
+        "companyName": "TEST Company",
+        "sector": "IT",
+        "status": "new",
+    }
+    r = session.post(f"{base}/api/leads", json={"lead": lead})
+    assert r.status_code in (200, 201), r.text
+    return lead
+
+
 class TestAuth:
     def test_me_unauth(self, s):
-        r = s.get(f"{BASE}/api/auth/me")
+        base = _require_base()
+        r = s.get(f"{base}/api/auth/me")
         assert r.status_code == 401
 
     def test_register_and_me(self, s):
+        base = _require_base()
         email = f"test_{uuid.uuid4().hex[:8]}@example.com"
-        r = s.post(f"{BASE}/api/auth/register", json={"name": "T", "email": email, "password": "Passw0rd!"})
+        r = s.post(f"{base}/api/auth/register", json={"name": "T", "email": email, "password": "Passw0rd!"})
         assert r.status_code in (200, 201), r.text
-        me = s.get(f"{BASE}/api/auth/me")
+        me = s.get(f"{base}/api/auth/me")
         assert me.status_code == 200
         assert me.json().get("email") == email
 
     def test_login_wrong_password(self, s):
-        r = s.post(f"{BASE}/api/auth/login", json={"email": ADMIN["email"], "password": "wrongpass"})
+        base = _require_base()
+        admin = _require_admin()
+        r = s.post(f"{base}/api/auth/login", json={"email": admin["email"], "password": "wrongpass"})
         assert r.status_code in (400, 401), r.status_code
 
     def test_admin_login(self, s):
-        r = s.post(f"{BASE}/api/auth/login", json=ADMIN)
+        base = _require_base()
+        admin = _require_admin()
+        r = s.post(f"{base}/api/auth/login", json=admin)
         assert r.status_code == 200
-        me = s.get(f"{BASE}/api/auth/me")
+        me = s.get(f"{base}/api/auth/me")
         assert me.status_code == 200
-        assert me.json().get("email") == ADMIN["email"]
+        assert me.json().get("email") == admin["email"]
 
     def test_logout(self, admin_session):
-        r = admin_session.post(f"{BASE}/api/auth/logout")
+        base = _require_base()
+        r = admin_session.post(f"{base}/api/auth/logout")
         assert r.status_code in (200, 204)
-        me = admin_session.get(f"{BASE}/api/auth/me")
+        me = admin_session.get(f"{base}/api/auth/me")
         assert me.status_code == 401
 
 
 class TestPipeline:
-    def _leads(self, s):
-        r = s.get(f"{BASE}/api/leads")
-        assert r.status_code == 200
-        data = r.json()
-        return data["leads"] if isinstance(data, dict) else data
-
-    def test_leads_crud(self, admin_session):
-        s = admin_session
-        initial = self._leads(s)
-        assert isinstance(initial, list)
-
-        lead = {
-            "id": f"TEST_{uuid.uuid4().hex[:8]}",
-            "companyName": "TEST Company",
-            "sector": "IT",
-            "status": "new",
-        }
-        r = s.post(f"{BASE}/api/leads", json={"lead": lead})
-        assert r.status_code in (200, 201), r.text
-
-        leads = self._leads(s)
+    def test_create_and_read_lead(self, admin_session):
+        lead = _create_lead(admin_session)
+        leads = _leads(admin_session)
+        assert isinstance(leads, list)
         assert any(l.get("id") == lead["id"] for l in leads), f"lead not persisted: {leads}"
 
-        r = s.patch(f"{BASE}/api/leads/{lead['id']}", json={"status": "contacted"})
+    def test_update_lead(self, admin_session):
+        base = _require_base()
+        lead = _create_lead(admin_session)
+        r = admin_session.patch(f"{base}/api/leads/{lead['id']}", json={"status": "contacted"})
         assert r.status_code in (200, 204), r.text
-        found = [l for l in self._leads(s) if l.get("id") == lead["id"]]
+        found = [l for l in _leads(admin_session) if l.get("id") == lead["id"]]
         assert found and found[0].get("status") == "contacted"
 
-        r = s.delete(f"{BASE}/api/leads/{lead['id']}")
+    def test_delete_lead(self, admin_session):
+        base = _require_base()
+        lead = _create_lead(admin_session)
+        r = admin_session.delete(f"{base}/api/leads/{lead['id']}")
         assert r.status_code in (200, 204)
-        assert not any(l.get("id") == lead["id"] for l in self._leads(s))
+        assert not any(l.get("id") == lead["id"] for l in _leads(admin_session))
 
     def test_leads_requires_auth(self):
-        r = requests.get(f"{BASE}/api/leads")
+        base = _require_base()
+        r = requests.get(f"{base}/api/leads")
         assert r.status_code == 401
 
     def test_email_me_endpoint(self, admin_session):
-        # Endpoint should wire up and respond (success or provider-rejection error both acceptable)
-        r = admin_session.post(f"{BASE}/api/leads/email-me", json={})
+        base = _require_base()
+        r = admin_session.post(f"{base}/api/leads/email-me", json={})
         assert r.status_code in (200, 400, 422, 500, 502), r.status_code
-        # Body should be JSON
         try:
             r.json()
         except Exception:

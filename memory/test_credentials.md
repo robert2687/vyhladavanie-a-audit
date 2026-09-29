@@ -5,6 +5,17 @@
 - Password: Admin12345
 - Role: admin
 
+### Running the pytest suite (credentials via env vars)
+Admin credentials are no longer hardcoded in the test files (security fix). Export them before running pytest:
+```
+export TEST_ADMIN_EMAIL="admin@slovakb2b.sk"
+export TEST_ADMIN_PASSWORD="Admin12345"
+export REACT_APP_BACKEND_URL="<preview backend url>"
+# optional, for the simulated Google-session test:
+export MONGO_URL="<mongo url>" DB_NAME="<db name>"
+```
+Tests skip gracefully when these are unset instead of exposing secrets.
+
 ## Auth
 - Email/password: POST /api/auth/register, POST /api/auth/login
 - Google (Emergent-managed) social login also enabled (no app password)

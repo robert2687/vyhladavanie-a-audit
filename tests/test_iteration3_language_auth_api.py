@@ -14,14 +14,20 @@ except Exception:  # pragma: no cover
 
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL")
-ADMIN_EMAIL = "admin@slovakb2b.sk"
-ADMIN_PASSWORD = "Admin12345"
+ADMIN_EMAIL = os.environ.get("TEST_ADMIN_EMAIL")
+ADMIN_PASSWORD = os.environ.get("TEST_ADMIN_PASSWORD")
 
 
 def _require_base_url() -> str:
     if not BASE_URL:
         pytest.skip("REACT_APP_BACKEND_URL is not set")
     return BASE_URL.rstrip("/")
+
+
+def _require_admin_credentials() -> tuple[str, str]:
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        pytest.skip("TEST_ADMIN_EMAIL / TEST_ADMIN_PASSWORD are not set")
+    return ADMIN_EMAIL, ADMIN_PASSWORD
 
 
 def _json_headers(language: str = "sk", extra: dict | None = None) -> dict:
@@ -41,6 +47,42 @@ def _register(session: requests.Session, email: str, password: str = "Passw0rd12
     )
 
 
+def _login_admin(session: requests.Session):
+    base = _require_base_url()
+    email, password = _require_admin_credentials()
+    return session.post(
+        f"{base}/api/auth/login",
+        json={"email": email, "password": password},
+        headers=_json_headers("en"),
+        timeout=30,
+    )
+
+
+def _sample_lead(lead_id: str, *, status: str = "new", contact: str = "owner@example.com", language: str = "en") -> dict:
+    return {
+        "id": lead_id,
+        "companyName": "TEST Pipeline Co",
+        "website": "https://example.com",
+        "companySize": "~10-20 employees",
+        "industry": "General SMB",
+        "region": "Slovakia",
+        "targetDecisionMaker": "Owner",
+        "directContact": contact,
+        "identifiedWebSignals": ["Signal"],
+        "valueProposition": "Value",
+        "coldOutreach": {"subject": "Hello", "body": "Body", "language": language},
+        "registers": {"orsrUrl": "https://www.orsr.sk", "finstatUrl": "https://finstat.sk", "overitUrl": "https://overit.sk"},
+        "auditTimestamp": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+    }
+
+
+def _assert_localized_prospect(prospect: dict, language: str, size_marker: str) -> None:
+    assert prospect.get("isMock")
+    assert prospect["coldOutreach"]["language"] == language
+    assert size_marker in prospect.get("companySize", "")
+
+
 @pytest.fixture
 def api_session() -> requests.Session:
     s = requests.Session()
@@ -52,15 +94,11 @@ def api_session() -> requests.Session:
 class TestAuthLanguage:
     def test_login_sets_http_only_secure_cookies_and_me(self, api_session: requests.Session):
         base = _require_base_url()
-        login = api_session.post(
-            f"{base}/api/auth/login",
-            json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-            headers=_json_headers("en"),
-            timeout=30,
-        )
+        email, _ = _require_admin_credentials()
+        login = _login_admin(api_session)
         assert login.status_code == 200
         data = login.json()
-        assert data["user"]["email"] == ADMIN_EMAIL
+        assert data["user"]["email"] == email
 
         set_cookie = login.headers.get("set-cookie", "")
         assert "access_token=" in set_cookie
@@ -71,7 +109,7 @@ class TestAuthLanguage:
 
         me = api_session.get(f"{base}/api/auth/me", headers={"x-ui-language": "en"}, timeout=30)
         assert me.status_code == 200
-        assert me.json()["email"] == ADMIN_EMAIL
+        assert me.json()["email"] == email
 
     def test_wrong_password_error_localizes_to_english(self, api_session: requests.Session):
         base = _require_base_url()
@@ -105,7 +143,7 @@ class TestAuthLanguage:
 
         logout = api_session.post(f"{base}/api/auth/logout", headers={"x-ui-language": "en"}, timeout=30)
         assert logout.status_code == 200
-        assert logout.json().get("success") is True
+        assert logout.json().get("success")
 
         me3 = api_session.get(f"{base}/api/auth/me", headers={"x-ui-language": "en"}, timeout=30)
         assert me3.status_code == 401
@@ -133,33 +171,14 @@ class TestAuthLanguage:
 class TestLeadsIsolationAndPersistence:
     def test_private_pipeline_isolation_between_users(self):
         base = _require_base_url()
-        email_a = f"iter3_a_{uuid.uuid4().hex[:8]}@example.com"
-        email_b = f"iter3_b_{uuid.uuid4().hex[:8]}@example.com"
         session_a = requests.Session()
         session_b = requests.Session()
 
-        assert _register(session_a, email_a).status_code in (200, 201)
-        assert _register(session_b, email_b).status_code in (200, 201)
+        assert _register(session_a, f"iter3_a_{uuid.uuid4().hex[:8]}@example.com").status_code in (200, 201)
+        assert _register(session_b, f"iter3_b_{uuid.uuid4().hex[:8]}@example.com").status_code in (200, 201)
 
         lead_id = f"TEST_ITER3_{uuid.uuid4().hex[:8]}"
-        lead = {
-            "id": lead_id,
-            "companyName": "TEST Pipeline Isolation Co",
-            "website": "https://example.com",
-            "companySize": "~10-20 employees",
-            "industry": "General SMB",
-            "region": "Slovakia",
-            "targetDecisionMaker": "Owner",
-            "directContact": "owner@example.com",
-            "identifiedWebSignals": ["Signal"],
-            "valueProposition": "Value",
-            "coldOutreach": {"subject": "Hello", "body": "Body", "language": "en"},
-            "registers": {"orsrUrl": "https://www.orsr.sk", "finstatUrl": "https://finstat.sk", "overitUrl": "https://overit.sk"},
-            "auditTimestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "new",
-        }
-
-        create = session_a.post(f"{base}/api/leads", json={"lead": lead}, headers=_json_headers("en"), timeout=30)
+        create = session_a.post(f"{base}/api/leads", json={"lead": _sample_lead(lead_id)}, headers=_json_headers("en"), timeout=30)
         assert create.status_code == 200
         assert create.json()["lead"]["id"] == lead_id
 
@@ -173,32 +192,15 @@ class TestLeadsIsolationAndPersistence:
 
     def test_saved_cold_outreach_language_persists_on_patch(self, api_session: requests.Session):
         base = _require_base_url()
-        login = api_session.post(
-            f"{base}/api/auth/login",
-            json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        assert _login_admin(api_session).status_code == 200
+
+        lead_id = f"TEST_ITER3_LANG_{uuid.uuid4().hex[:8]}"
+        created = api_session.post(
+            f"{base}/api/leads",
+            json={"lead": _sample_lead(lead_id, status="saved", contact="owner@example.org", language="en")},
             headers=_json_headers("en"),
             timeout=30,
         )
-        assert login.status_code == 200
-
-        lead_id = f"TEST_ITER3_LANG_{uuid.uuid4().hex[:8]}"
-        lead = {
-            "id": lead_id,
-            "companyName": "TEST Language Persist Co",
-            "website": "https://example.org",
-            "companySize": "~11-18 employees",
-            "industry": "General SMB",
-            "region": "Slovakia",
-            "targetDecisionMaker": "Owner",
-            "directContact": "owner@example.org",
-            "identifiedWebSignals": ["Signal"],
-            "valueProposition": "Value",
-            "coldOutreach": {"subject": "Initial", "body": "Initial body", "language": "en"},
-            "registers": {"orsrUrl": "https://www.orsr.sk", "finstatUrl": "https://finstat.sk", "overitUrl": "https://overit.sk"},
-            "auditTimestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "saved",
-        }
-        created = api_session.post(f"{base}/api/leads", json={"lead": lead}, headers=_json_headers("en"), timeout=30)
         assert created.status_code == 200
         assert created.json()["lead"]["coldOutreach"]["language"] == "en"
 
@@ -219,7 +221,7 @@ class TestLeadsIsolationAndPersistence:
 
 # AI fallback localization module coverage: EN/SK output + explicit mock labels.
 class TestLocalizedMockResponses:
-    def test_search_mock_contains_isMock_and_language_specific_content(self, api_session: requests.Session):
+    def _search(self, session: requests.Session, language: str):
         base = _require_base_url()
         payload = {
             "provider": "perplexity",
@@ -229,37 +231,29 @@ class TestLocalizedMockResponses:
             "minEmployees": 3,
             "maxEmployees": 50,
             "count": 1,
+            "language": language,
         }
-
-        en = api_session.post(
+        return session.post(
             f"{base}/api/leads/search",
-            json={**payload, "language": "en"},
-            headers=_json_headers("en", {"x-ai-provider": "perplexity", "x-ai-model": "sonar"}),
+            json=payload,
+            headers=_json_headers(language, {"x-ai-provider": "perplexity", "x-ai-model": "sonar"}),
             timeout=40,
         )
+
+    def test_search_mock_contains_isMock_and_language_specific_content(self, api_session: requests.Session):
+        en = self._search(api_session, "en")
         assert en.status_code == 200
         en_data = en.json()
-        assert en_data["success"] is True
-        assert en_data.get("isMock") is True
+        assert en_data["success"]
+        assert en_data.get("isMock")
         assert isinstance(en_data.get("prospects"), list) and len(en_data["prospects"]) > 0
-        en_p = en_data["prospects"][0]
-        assert en_p.get("isMock") is True
-        assert en_p["coldOutreach"]["language"] == "en"
-        assert "employees" in en_p.get("companySize", "")
+        _assert_localized_prospect(en_data["prospects"][0], "en", "employees")
 
-        sk = api_session.post(
-            f"{base}/api/leads/search",
-            json={**payload, "language": "sk"},
-            headers=_json_headers("sk", {"x-ai-provider": "perplexity", "x-ai-model": "sonar"}),
-            timeout=40,
-        )
+        sk = self._search(api_session, "sk")
         assert sk.status_code == 200
         sk_data = sk.json()
-        assert sk_data.get("isMock") is True
-        sk_p = sk_data["prospects"][0]
-        assert sk_p.get("isMock") is True
-        assert sk_p["coldOutreach"]["language"] == "sk"
-        assert "zamestnancov" in sk_p.get("companySize", "")
+        assert sk_data.get("isMock")
+        _assert_localized_prospect(sk_data["prospects"][0], "sk", "zamestnancov")
 
     def test_audit_and_refine_support_en_and_sk_with_mock_flags(self, api_session: requests.Session):
         base = _require_base_url()
@@ -272,9 +266,9 @@ class TestLocalizedMockResponses:
         )
         assert audit_en.status_code == 200
         ad_en = audit_en.json()
-        assert ad_en["success"] is True
-        assert ad_en.get("isMock") is True
-        assert ad_en["prospect"]["isMock"] is True
+        assert ad_en["success"]
+        assert ad_en.get("isMock")
+        assert ad_en["prospect"]["isMock"]
         assert ad_en["prospect"]["coldOutreach"]["language"] == "en"
 
         refine_sk = api_session.post(
@@ -293,8 +287,8 @@ class TestLocalizedMockResponses:
         )
         assert refine_sk.status_code == 200
         rd_sk = refine_sk.json()
-        assert rd_sk["success"] is True
-        assert rd_sk.get("isMock") is True
+        assert rd_sk["success"]
+        assert rd_sk.get("isMock")
         assert isinstance(rd_sk.get("subject"), str) and len(rd_sk["subject"]) > 0
         assert isinstance(rd_sk.get("body"), str) and len(rd_sk["body"]) > 0
 
