@@ -312,7 +312,9 @@ export function generateContextualSlovakLeads(params: {
 
     const cleanRegion = reqRegion.split("(")[0].trim();
     const cleanIndustry = reqIndustry;
-    const empRange = `~${Math.max(minEmp, 5 + i * 4)}-${Math.min(maxEmp, 18 + i * 7)} zamestnancov`;
+    const lo = Math.max(minEmp, 5 + i * 4);
+    const hi = Math.max(lo, Math.min(maxEmp, 18 + i * 7));
+    const empRange = `~${lo}-${hi} zamestnancov`;
 
     const companyClean = base.companyName.replace(/\(IČO.*?\)/i, "").trim();
     const finalCompanyName = i === 0 ? base.companyName : `${companyClean} (${cleanRegion})`;
