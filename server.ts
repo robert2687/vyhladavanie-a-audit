@@ -2006,11 +2006,22 @@ async function sendEmail(opts: { to: string; subject: string; html: string; repl
   const payload: any = { to: [opts.to], subject: opts.subject, html: opts.html, from_name: fromName };
   const replyTo = opts.replyTo || process.env.EMAIL_REPLY_TO;
   if (replyTo) payload.contact_email = replyTo;
-  const resp = await fetch(`${EMAIL_BASE_URL}/api/v1/email/send`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Email-Key": key },
-    body: JSON.stringify(payload),
-  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  let resp: Response;
+  try {
+    resp = await fetch(`${EMAIL_BASE_URL}/api/v1/email/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Email-Key": key },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (e: any) {
+    throw new Error(e?.name === "AbortError" ? "E-mailová služba neodpovedala včas." : "E-mailovú službu sa nepodarilo kontaktovať.");
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!resp.ok) {
     const t = await resp.text();
     throw new Error(`Email send failed (${resp.status}): ${t.slice(0, 120)}`);

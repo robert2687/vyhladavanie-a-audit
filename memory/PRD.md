@@ -1,31 +1,29 @@
 # Slovak B2B Lead Generator & Web Audit — PRD / Working Notes
 
-## Original request
-"Look for issues in this app" — hunt for performance, bugs/broken flows, security, and UI/UX issues, and fix them right away.
+## Product
+AI-assisted B2B lead discovery + website audit tool for the Slovak SMB market. Vite + React 19 (TypeScript) frontend and an Express (Node) API in a single `server.ts`. UI is in Slovak. Falls back to a curated Slovak SMB dataset when no AI provider key is configured.
 
-## Architecture (as found)
-- Frontend: Vite 6 + React 19 + TypeScript + Tailwind 4 (source in `/app/src`).
-- Backend: Express (Node) API defined in `/app/server.ts` (single file, ~1600 lines).
-- Multi-provider AI (Gemini/Anthropic/Perplexity/NVIDIA Nemotron/DeepSeek/OpenAI/Grok). With no keys set, the app runs in a **fallback/mock mode** returning a curated Slovak SMB dataset — this is intended default behavior.
-- Client persists saved leads, search history, provider keys/models in browser localStorage. No database.
-- Deploy target: Vercel (`vercel.json`, `api/index.ts`).
+## Run model (Emergent pod)
+- Single Node process launched by the supervisor `frontend` program via `/app/frontend/package.json` → `cd /app && npx tsx server.ts`.
+- Binds BOTH port 3000 (frontend / Vite middleware) and 8001 (API) because the ingress routes `/api/*` → 8001 and everything else → 3000.
+- MongoDB: local `mongod` (MONGO_URL in `/app/.env`, DB `slovak_b2b`).
+- Real deployment target is Vercel (vercel.json + api/index.ts). For Vercel a cloud MongoDB (Atlas) connection string is required.
 
-## Platform run model (important)
-- The pod supervisor is preconfigured for a Python/React stack (`/app/backend` uvicorn, `/app/frontend` yarn) which did NOT match this Node app, so nothing ran.
-- Fix: `/app/frontend/package.json` `start` launches the Node server from `/app` (`npx tsx server.ts`). `server.ts` now binds BOTH port 3000 (frontend) and 8001 (API) to satisfy the ingress contract (`/api/*` → 8001, everything else → 3000). Frontend uses relative `/api` URLs, so no REACT_APP_BACKEND_URL is needed.
-- The `backend` supervisor program remains FATAL (expects a non-existent Python app); harmless because the Node server serves the API on 8001.
+## Implemented
+- **[2026-06] Issue review round 1:** fixed a React hooks-order crash in `RefinePitchModal`; made the server bind both platform ports; added a 1MB JSON body limit.
+- **[2026-06] Accounts:** email/password (JWT httpOnly cookies, bcrypt, brute-force lockout) AND Emergent-managed Google sign-in, unified `users` collection. Admin seeded from env.
+- **[2026-06] Cloud Pipeline:** saved leads persist per-user in MongoDB (`leads` collection); loads on any device after login. Endpoints GET/POST/PATCH/DELETE `/api/leads`.
+- **[2026-06] CRM Export:** Excel/CSV download (existing), `Kopírovať pre CRM` (HubSpot/Pipedrive tab-separated clipboard), `Kopírovať MD`.
+- **[2026-06] Transactional email:** `Poslať mi e-mailom` → POST `/api/leads/email-me` emails the logged-in user their OWN saved leads via Emergent-managed Resend (20s timeout, always JSON).
+- **Live AI Search:** works today — user adds a Gemini/Perplexity/etc. key in the in-app provider settings; sent per-request to the server.
 
-## Issues found & fixed (2026-09-29)
-1. [BLOCKER] App did not run in this environment (stack/supervisor mismatch). Fixed via launcher + dual-port bind in `server.ts`. App now works end-to-end at the preview URL.
-2. [BUG/crash] `src/components/RefinePitchModal.tsx` violated the Rules of Hooks — `if (!isOpen || !prospect) return null;` was placed before `useState` calls, crashing React when the modal opened. Moved all hooks above the guard and added a `useEffect` keyed on `prospect?.id` to re-sync subject/body/language when a different prospect is opened.
-3. [Security hardening] Added a 1MB JSON body limit (`express.json({ limit: "1mb" })`).
+## Compliance note (important)
+- The prospect **cold-outreach "E-mail" button stays a `mailto:` draft** (opens the user's own mail client). Managed email providers prohibit cold outreach / open relay, so it is NOT routed through the managed provider.
 
-## Verification
-- `tsc --noEmit` clean; `npm test` (DeepSeek + Nemotron provider payload tests) pass.
-- Frontend E2E via testing agent: 100% — discovery search, refine-pitch modal (open/regenerate/save + state re-sync across prospects), instant audit, save-to-pipeline + status/CSV/MD export, API key modal, search history, guide tab. Zero page errors.
+## Auth / test creds
+- See `/app/memory/test_credentials.md` and `/app/auth_testing.md`. Admin: admin@slovakb2b.sk / Admin12345.
 
-## Backlog / observations (not blocking)
-- P2: `server.ts` is a very large single file; could be split into modules (providers, fallback data, routes). Cosmetic/maintainability only.
-- P2: Nemotron default model string differs between `src/data/aiProviders.ts` and `App.tsx` defaults; handled by validation, cosmetic.
-- P2: Add `data-testid` attributes (alongside existing `id`s) for more robust automation.
-- Note: real deployment is Vercel; the pod run model above is for the Emergent preview only.
+## Backlog / next
+- **Google Sheets push:** deferred — needs the user's Google Cloud OAuth client credentials (client id/secret) with the Sheets scope. Ask for these to implement one-click push into a Sheet in their account.
+- Optional: split `server.ts` into route modules; add `data-testid` to header tabs.
+- Vercel: provide MongoDB Atlas MONGO_URL + secrets for production.
