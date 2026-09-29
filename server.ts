@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 let aiClient: GoogleGenAI | null = null;
 let isDefaultGeminiAvailable = Boolean(process.env.GEMINI_API_KEY);
@@ -1638,7 +1638,13 @@ async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // Allow the hosted preview domain to reach the Vite dev server.
+        allowedHosts: true,
+        // HMR websocket is unreliable behind the preview proxy; disable it.
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -1650,9 +1656,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
-  });
+  // Bind the frontend port (3000) and the API port (8001). The hosting proxy
+  // routes "/api/*" to 8001 and everything else to 3000, and the same Express
+  // app serves both, so binding both ports makes the app work end-to-end.
+  const ports = Array.from(
+    new Set([PORT, Number(process.env.API_PORT) || 8001]),
+  );
+  for (const p of ports) {
+    app.listen(p, "0.0.0.0", () => {
+      console.log(`B2B Slovak Lead Generation server running on port ${p}`);
+    });
+  }
 }
 
 export default app;

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { X, Sparkles, Copy, Check, Sliders, Mail } from "lucide-react";
 import { Prospect, AIProviderId } from "../types";
 import { safeFetchJson } from "../utils/api";
@@ -22,17 +22,28 @@ export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
   activeApiKey = "",
   activeModel,
 }) => {
-  if (!isOpen || !prospect) return null;
-
-  const [subject, setSubject] = useState(prospect.coldOutreach.subject);
-  const [body, setBody] = useState(prospect.coldOutreach.body);
+  const [subject, setSubject] = useState(prospect?.coldOutreach.subject ?? "");
+  const [body, setBody] = useState(prospect?.coldOutreach.body ?? "");
   const [tone, setTone] = useState<string>("direct");
   const [customOffer, setCustomOffer] = useState("");
   const [language, setLanguage] = useState<"sk" | "en">(
-    (prospect.coldOutreach.language as "sk" | "en") || "sk"
+    (prospect?.coldOutreach.language as "sk" | "en") || "sk"
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Re-sync editable fields whenever a different prospect is opened.
+  useEffect(() => {
+    if (prospect) {
+      setSubject(prospect.coldOutreach.subject);
+      setBody(prospect.coldOutreach.body);
+      setLanguage((prospect.coldOutreach.language as "sk" | "en") || "sk");
+      setTone("direct");
+      setCustomOffer("");
+    }
+  }, [prospect?.id]);
+
+  if (!isOpen || !prospect) return null;
 
   const handleRegenerate = async () => {
     setIsGenerating(true);
