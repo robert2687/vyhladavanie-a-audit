@@ -1711,16 +1711,20 @@ function publicUser(u: any) {
 
 // Resolve the current user from JWT access token (cookie/Bearer) or Emergent session token.
 async function getCurrentUser(req: express.Request): Promise<any | null> {
-  const db = await getDb();
   const authHeader = (req.headers["authorization"] as string) || "";
   const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
 
-  // 1) JWT access token
+  // If there is no token, do not require MongoDB just to report an anonymous user.
   const accessToken = req.cookies?.access_token || bearer;
+  const sessionToken = req.cookies?.session_token || bearer;
+  if (!accessToken && !sessionToken) return null;
+
+  // 1) JWT access token
   if (accessToken) {
     try {
       const payload: any = jwt.verify(accessToken, getJwtSecret());
       if (payload?.type === "access" && payload?.sub) {
+        const db = await getDb();
         const user = await db.collection("users").findOne({ user_id: payload.sub }, { projection: { _id: 0 } });
         if (user) return user;
       }
@@ -1730,8 +1734,8 @@ async function getCurrentUser(req: express.Request): Promise<any | null> {
   }
 
   // 2) Emergent session token
-  const sessionToken = req.cookies?.session_token || bearer;
   if (sessionToken) {
+    const db = await getDb();
     const sess = await db.collection("sessions").findOne({ session_token: sessionToken });
     if (sess) {
       let expiresAt = sess.expires_at;
@@ -1907,9 +1911,13 @@ app.post("/api/auth/logout", async (req, res) => {
 });
 
 app.get("/api/auth/me", async (req, res) => {
-  const user = await getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
-  res.json(publicUser(user));
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
+    res.json(publicUser(user));
+  } catch {
+    res.status(401).json({ error: "Neprihlásený používateľ." });
+  }
 });
 
 app.post("/api/auth/refresh", async (req, res) => {
@@ -2083,7 +2091,6 @@ app.post("/api/leads/email-me", requireAuth, async (req, res) => {
 
 // Start server with Vite middleware in dev or static files in production
 async function startServer() {
-  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -2097,25 +2104,17 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else if (!process.env.VERCEL) {
+  } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
-  if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
-    });
-  }
-  // Bind the frontend port (3000) and the API port (8001). The hosting proxy
-  // routes "/api/*" to 8001 and everything else to 3000, and the same Express
-  // app serves both, so binding both ports makes the app work end-to-end.
-  const ports = Array.from(
-    new Set([PORT, Number(process.env.API_PORT) || 8001]),
-  );
+  // Bind the frontend port (3000 by default) and the API port (8001 by default).
+  // The hosting proxy routes /api/* to 8001 and everything else to 3000.
+  const ports = Array.from(new Set([PORT, Number(process.env.API_PORT) || 8001]));
   for (const p of ports) {
     app.listen(p, "0.0.0.0", () => {
       console.log(`B2B Slovak Lead Generation server running on port ${p}`);
@@ -2126,16 +2125,12 @@ async function startServer() {
   seedAdmin();
 }
 
-if (!process.env.VERCEL) {
-  startServer();
+// Only start a listener for local/dev execution. Vercel and tests import the app.
+if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
+  startServer().catch((error) => {
+    console.error("Failed to start server", error);
+    process.exit(1);
+  });
 }
 
-if (process.env.NODE_ENV !== "test") {
 export default app;
-// Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
-if (!process.env.VERCEL) {
-export default app;
-
-if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {
-  startServer();
-}

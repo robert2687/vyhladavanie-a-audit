@@ -66,8 +66,7 @@ function aistudioMediaPlugin(): Plugin {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, path.resolve(__dirname, 'frontend'), 'REACT_APP_');
-  const backendUrl = process.env.REACT_APP_BACKEND_URL || env.REACT_APP_BACKEND_URL;
-  if (!backendUrl) throw new Error('REACT_APP_BACKEND_URL is required');
+  const backendUrl = (process.env.REACT_APP_BACKEND_URL || env.REACT_APP_BACKEND_URL || '').replace(/\/$/, '');
   return {
     define: { 'process.env.REACT_APP_BACKEND_URL': JSON.stringify(backendUrl) },
     plugins: [react(), tailwindcss(), aistudioMediaPlugin()],
