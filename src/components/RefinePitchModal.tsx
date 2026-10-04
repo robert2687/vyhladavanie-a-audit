@@ -3,6 +3,7 @@ import React, { useState, useEffect } from "react";
 import { X, Sparkles, Copy, Check, Sliders, Mail } from "lucide-react";
 import { Prospect, AIProviderId } from "../types";
 import { safeFetchJson } from "../utils/api";
+import { generateRefinedPitchFallback } from "../utils/fallbackData";
 
 interface RefinePitchModalProps {
   prospect: Prospect | null;
@@ -90,6 +91,19 @@ export const RefinePitchModal: React.FC<RefinePitchModalProps> = ({
         if (data.isMock) setNotice(uiLanguage === 'en' ? 'Sample draft — live AI was unavailable.' : 'Ukážkový draft — živá AI nebola dostupná.');
       } else {
         throw new Error(uiLanguage === 'en' ? 'Could not generate a draft.' : 'Nepodarilo sa vygenerovať draft.');
+      }
+    } catch (err) {
+      console.error("Failed to regenerate pitch via API, using fallback generator:", err);
+      const fallback = generateRefinedPitchFallback(
+        prospect.companyName,
+        prospect.targetDecisionMaker,
+        customOffer || prospect.valueProposition,
+        tone,
+        language
+      );
+      if (fallback.subject && fallback.body) {
+        setSubject(fallback.subject);
+        setBody(fallback.body);
       }
     } catch (err: any) {
       console.error("Failed to regenerate pitch", err);

@@ -491,6 +491,12 @@ export interface Prospect {
   notes?: string;
 }
 
+import {
+  CURATED_SLOVAK_SMBS,
+  generateContextualSlovakLeads,
+  generateCompanyAuditFallback,
+  generateRefinedPitchFallback,
+} from "./src/utils/fallbackData";
 // Fallback high-quality curated sample dataset of real Slovak SMBs across various regions
 const CURATED_SLOVAK_SMBS: Prospect[] = [
   {
@@ -2130,6 +2136,9 @@ if (!process.env.VERCEL) {
   startServer();
 }
 
+export default app;
+
+if (!process.env.VERCEL) {
 if (process.env.NODE_ENV !== "test") {
 export default app;
 // Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
