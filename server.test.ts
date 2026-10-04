@@ -73,6 +73,12 @@ describe("Backend API Endpoints Verification", () => {
     expect(data.systemInstruction).toContain("B2B Lead Generation");
   });
 
+  it("GET /api/auth/me returns 401 instead of crashing when unauthenticated", async () => {
+    const { status, data } = await getJson("/api/auth/me");
+    expect(status).toBe(401);
+    expect(data.error).toBeDefined();
+  });
+
   it("POST /api/leads/search returns prospects (live or fallback)", async () => {
     const { status, data } = await postJson("/api/leads/search", {
       region: "Bratislavský kraj",
