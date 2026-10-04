@@ -1,0 +1,33 @@
+{
+  "summary": "Auth + cloud pipeline + CRM export/email flows fully verified end-to-end. Backend pytest suite (8/8 passing): unauth /api/auth/me→401, register→200 & me returns email, wrong-password→401, admin login OK, logout clears session, GET/POST/PATCH/DELETE /api/leads gated by auth and persist correctly to MongoDB (server returns {success, leads:[...]}), POST /api/leads/email-me responds with JSON. Frontend Playwright: (1) unauth user sees Login screen with all auth-* testids + google-login-btn; (2) Registrácia of a fresh email logs in and shows current-user-chip + logout-btn; (3) Odhlásiť returns to Login; (4) wrong password shows auth-error 'Nesprávny e-mail alebo heslo.'; (5) admin@slovakb2b.sk/Admin12345 logs in; (6) 'Uložiť do Pipeline' saves prospect (verified /api/leads persistence directly); (7) reload keeps the lead (cloud, not localStorage); (8) per-lead status dropdown change ('Nový' → 'Odoslaný cold pitch') persists across reload — DB confirmed status='contacted'; (9) export-csv-btn downloads slovak_b2b_leads_YYYY-MM-DD.csv; copy-crm-btn / copy-md-btn click without error; (10) email-me-btn calls /api/leads/email-me and shows email-notice — currently returns HTTP 502 HTML from ingress (upstream email provider path errors) which per spec is ACCEPTABLE for undeliverable/dummy scenarios; (11) 'Odstrániť z Pipeline' and 'Vymazať' with window.confirm both remove leads and persist across reload; (12) RefinePitchModal opens without hooks-order crash (regression holds); (13) Instant audit fallback still runs; (14) Zero pageerror events captured.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/leads/email-me", "issue": "When Emergent email provider path is unreachable, the ingress returns HTML 502 page instead of a JSON error from the server (frontend then shows 'Neplatná odpoveď zo servera (HTTP 502)'). The email-notice still displays so UX degrades gracefully, but the server-side route should ideally always return JSON within a bounded timeout so ingress does not intercept. Per review-request spec this is 'acceptable and expected', flagging as minor code-quality note only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/test_auth_and_pipeline.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Header uses id='tab-pipeline-btn' (not data-testid). Review request lists it as data-testid — consider adding data-testid='tab-pipeline-btn' to match convention with the other pipeline/auth testids for consistent test tooling.",
+    "google-login-btn attribute check: element href resolved to None in the first Playwright pass — verify it's an <a href> pointing at auth.emergentagent.com (or a <button> that navigates via onClick). Not blocking, but review-request explicitly asks for the Google button 'exists and points to auth.emergentagent.com'.",
+    "server.ts is ~2100 lines (auth + leads + AI + email in one file). Consider splitting into modules (routes/auth.ts, routes/leads.ts, routes/ai.ts, email.ts) — same recommendation carried forward from iteration_1.",
+    "/api/leads/email-me should guard against long-running provider calls with an explicit AbortController/timeout and always respond JSON, so the ingress can't inject an HTML 502."
+  ],
+  "updated_files": ["/app/tests/test_auth_and_pipeline.py"],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% of requested flows"},
+  "test_credentials": "Admin: admin@slovakb2b.sk / Admin12345. Also registers fresh users testp_<uuid>@example.com / Passw0rd123! per run.",
+  "seed_data_creation": "Each run creates a fresh registered user (testp_<uuid>@example.com) and saves 1 prospect (IN VEST, s.r.o.) to admin pipeline. Backend pytest creates+deletes TEST_<uuid> leads.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Auth is httpOnly-cookie based (access_token) — use requests.Session() to preserve cookies. Pipeline endpoints: POST /api/leads expects body {lead:{id,...}} (NOT the lead directly). GET /api/leads returns {success:true, leads:[<lead>...]}. Pipeline tab in header is id='tab-pipeline-btn' (id, not data-testid). PipelineView has 2 selects: [0]=status filter (values all/new/contacted/meeting/archived), [1]=per-lead status (values new/contacted/meeting/archived). Status label 'new' displays as 'Nový', 'contacted' as 'Odoslaný cold pitch'. Instant audit inputs at #instant-audit-input + #submit-instant-audit-btn on #tab-audit-btn. Refine modal opens from button[title*='Prispôsobiť'] on each prospect card. /api/leads/email-me currently produces HTTP 502 HTML in this environment — expected per spec.",
+  "rca of the issue": "No blocking bugs. Only minor observation: /api/leads/email-me can bubble a 502 HTML page from ingress when the upstream email provider fails/times out; frontend correctly surfaces this as an email-notice error, which the spec explicitly labels as acceptable."
+}

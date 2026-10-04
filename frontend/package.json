@@ -1,0 +1,9 @@
+{
+  "name": "slovak-b2b-runner",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Supervisor launcher that runs the Vite + Express app from /app on ports 3000 (frontend) and 8001 (API).",
+  "scripts": {
+    "start": "cd /app && exec npx tsx server.ts"
+  }
+}

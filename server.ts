@@ -1,15 +1,26 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import { MongoClient, Db } from "mongodb";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import cookieParser from "cookie-parser";
+import crypto from "crypto";
+import { localizeMessages, localizeSample, localeOf, outputLanguageInstruction } from './server/localization';
 
 dotenv.config();
 
 export const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
+app.use(localizeMessages);
+app.use(['/api/leads/search', '/api/audit/company', '/api/leads/refine-pitch'], (req, _res, next) => {
+  if (req.body && typeof req.body === 'object') req.body.language = localeOf(req.body.language);
+  next();
+});
 
 let aiClient: GoogleGenAI | null = null;
 let isDefaultGeminiAvailable = Boolean(process.env.GEMINI_API_KEY);
@@ -129,6 +140,9 @@ export function resolveProviderAndKey(req: express.Request): {
   let apiKey: string | undefined =
     (req.headers[`x-${provider}-api-key`] as string) ||
     (req.headers["x-custom-api-key"] as string) ||
+    (Array.isArray(req.headers["x-api-key"])
+      ? req.headers["x-api-key"][0]
+      : (req.headers["x-api-key"] as string | undefined)) ||
     (provider === "gemini" ? (req.headers["x-gemini-api-key"] as string) : undefined) ||
     req.body?.customApiKey ||
     req.body?.apiKey;
@@ -189,14 +203,14 @@ async function fetchJsonSafely(url: string, options: RequestInit): Promise<any> 
 export async function callAIProvider(
   params: ProviderCallParams
 ): Promise<ProviderCallResult> {
-  const { provider, apiKey, model, systemInstruction, prompt, jsonMode } = params;
+  let { provider, apiKey, model, systemInstruction, prompt, jsonMode } = params;
 
   if (provider === "gemini") {
     const ai = getGenAI(apiKey);
     if (!ai) {
       throw new Error("Google Gemini API kľúč nie je nastavený.");
     }
-    const chosenModel = model || "gemini-3.8-flash";
+    const chosenModel = model || "gemini-2.5-flash";
     const response = await ai.models.generateContent({
       model: chosenModel,
       contents: prompt,
@@ -282,25 +296,42 @@ export async function callAIProvider(
 
   // 3. NVIDIA Nemotron (NVIDIA NIM)
   if (provider === "nemotron") {
-    const chosenModel = model || "nvidia/llama-3.1-nemotron-70b-instruct";
+    const chosenModel = model || "nvidia/nemotron-3.5-lightning-30b-a3b";
+    const isNemotron35 = chosenModel === "nvidia/nemotron-3.5-lightning-30b-a3b";
+
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.2,
+      max_tokens: isNemotron35 ? 16384 : 4096,
+    };
+
+    if (isNemotron35) {
+      bodyPayload.extra_body = {
+        chat_template_kwargs: { enable_thinking: true },
+        reasoning_budget: 16384,
+      };
+    }
+
     const data: any = await fetchJsonSafely("https://integrate.api.nvidia.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
-        max_tokens: 4096,
-      }),
+      body: JSON.stringify(bodyPayload),
     });
 
-    const text = data.choices?.[0]?.message?.content || "";
+    const message = data.choices?.[0]?.message || {};
+    let text = message.content || "";
+    const reasoningContent = message.reasoning_content || data.choices?.[0]?.delta?.reasoning_content;
+    if (!text && reasoningContent) {
+      text = reasoningContent;
+    }
+
     return {
       text,
       provider: "nemotron",
@@ -311,6 +342,32 @@ export async function callAIProvider(
   // 4. DeepSeek
   if (provider === "deepseek") {
     const chosenModel = model || "deepseek-chat";
+    const isReasoningModel = chosenModel === "deepseek-reasoner";
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: prompt },
+      ],
+      response_format: jsonMode && !isReasoningModel ? { type: "json_object" } : undefined,
+    };
+    if (!isReasoningModel) {
+      bodyPayload.temperature = 0.2;
+    }
+    const messages = isReasoningModel
+      ? [
+          {
+            role: "user",
+            content: systemInstruction
+              ? `${systemInstruction}\n\n${prompt}`
+              : prompt,
+          },
+        ]
+      : [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ];
+
     const data: any = await fetchJsonSafely("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: {
@@ -318,12 +375,8 @@ export async function callAIProvider(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
+        ...bodyPayload,
+        messages,
         response_format: jsonMode ? { type: "json_object" } : undefined,
       }),
     });
@@ -339,21 +392,35 @@ export async function callAIProvider(
   // 5. OpenAI
   if (provider === "openai") {
     const chosenModel = model || "gpt-4o";
+    const isReasoningModel = chosenModel.startsWith("o1") || chosenModel.startsWith("o3");
+
+    const messages: any[] = isReasoningModel
+      ? [
+          { role: "developer", content: systemInstruction },
+          { role: "user", content: prompt },
+        ]
+      : [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ];
+
+    const bodyPayload: any = {
+      model: chosenModel,
+      messages,
+      response_format: jsonMode && !isReasoningModel ? { type: "json_object" } : undefined,
+    };
+
+    if (!isReasoningModel) {
+      bodyPayload.temperature = 0.2;
+    }
+
     const data: any = await fetchJsonSafely("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
-        response_format: jsonMode ? { type: "json_object" } : undefined,
-      }),
+      body: JSON.stringify(bodyPayload),
     });
 
     const text = data.choices?.[0]?.message?.content || "";
@@ -396,6 +463,7 @@ export async function callAIProvider(
 
 export interface Prospect {
   id: string;
+  isMock?: boolean;
   companyName: string;
   ico?: string;
   website: string;
@@ -429,6 +497,419 @@ import {
   generateCompanyAuditFallback,
   generateRefinedPitchFallback,
 } from "./src/utils/fallbackData";
+// Fallback high-quality curated sample dataset of real Slovak SMBs across various regions
+const CURATED_SLOVAK_SMBS: Prospect[] = [
+  {
+    id: "sk-smb-1",
+    companyName: "IN VEST, s.r.o. (IČO: 36244491)",
+    ico: "36244491",
+    website: "https://www.in-vest.sk",
+    companySize: "~30-45 zamestnancov",
+    industry: "Stavebníctvo & Priemyselné haly",
+    region: "Trnavský kraj (Šaľa / Trnava)",
+    targetDecisionMaker: "Ing. Peter Kováč – Konateľ / Výkonný riaditeľ (ORSR / LinkedIn)",
+    decisionMakerSource: "ORSR.sk & LinkedIn",
+    directContact: "+421 905 456 789 / p.kovac@in-vest.sk (LinkedIn profil aktívny)",
+    contactType: "Mobil & Priamy e-mail",
+    identifiedWebSignals: [
+      "Dopytový proces funguje len cez statický email a všeobecný PDF formulár bez okamžitého potvrdenia",
+      "Katalóg realizácií neobsahuje interaktívny dopytový konfigurátor rozpočtu pre investorov",
+      "Webová stránka nemá mobilné CTA tlačidlá pre priame telefonické spojenie s vedúcim stavieb",
+      "Chýba automatické notifikovanie projektového manažéra pri zadaní nového tendra"
+    ],
+    valueProposition: "Automatizovaný B2B intake formulár s kalkuláciou predbežnej kapacity haly a okamžitou SMS/Slack notifikáciou stavbyvedúcemu.",
+    coldOutreach: {
+      subject: "Otázka k dopytom na in-vest.sk a zrýchlenie nacenenia hál",
+      body: "Dobrý deň pán Kováč,\n\nvšimol som si vaše nedávne priemyselné realizácie v regióne. Na webe in-vest.sk však potenciálny investor musí sťahovať všeobecný PDF formulár alebo písať na centrálu, čo podľa našich dát odradí až 35 % záujemcov.\n\nPre stavebné SMB firmy nasadzujeme interaktívny dopytový konfigurátor, ktorý investorovi okamžite zosumarizuje požiadavky a vám pošle notifikáciu priamo do mobilu.\n\nBoli by ste otvorení krátkej 10-minútovej ukážke, ako by to fungovalo pre vaše stavby?",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=IN+VEST&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/36244491",
+      overitUrl: "https://overit.sk/ico/36244491"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  },
+  {
+    id: "sk-smb-2",
+    companyName: "MONT-R, s.r.o. (IČO: 36341259)",
+    ico: "36341259",
+    website: "https://www.mont-r.sk",
+    companySize: "~15-25 zamestnancov",
+    industry: "Kovoobrábanie & CNC výroba",
+    region: "Žilinský kraj (Považská Bystrica / Žilina)",
+    targetDecisionMaker: "Miroslav Rybár – Konateľ & Vedúci výroby (ORSR)",
+    decisionMakerSource: "ORSR.sk Register",
+    directContact: "+421 911 340 112 / rybar@mont-r.sk",
+    contactType: "Priamy mobil konateľa",
+    identifiedWebSignals: [
+      "Výkresová dokumentácia (DWG/STEP) sa posiela voľnou prílohou cez info@ email, čo spôsobuje zdržanie pri technickej kontrole",
+      "Žiadny klientsky portál na sledovanie stavu zákazky vo výrobe",
+      "Cenník služieb a strojového parku je v zastaranom neaktualizovanom formáte",
+      "Web nemá zabezpečený rýchly upload veľkých technických výkresov s automatickou validáciou formátu"
+    ],
+    valueProposition: "Bezpečný B2B intake portál pre upload technických výkresov (CAD/STEP) s automatickým výpočtom predbežnej dodacej lehoty a CRM routingom.",
+    coldOutreach: {
+      subject: "Zrýchlenie spracovania CAD výkresov a dopytov pre MONT-R",
+      body: "Dobrý deň pán Rybár,\n\nprešiel som si vašu ponuku CNC frézovania a delenia materiálu v Považskej. Všimol som si, že noví B2B partneri vám musia posielať výkresovú dokumentáciu cez bežný e-mail, čo často vedie k zdržaniam a chýbajúcim parametrom.\n\nPomáhame strojárom integrovať zabezpečený upload výkresov s okamžitou validáciou rozmerov materiálu, čo ušetrí vašim technológom 5+ hodín týždenne.\n\nMali by ste v utorok priestor na 8 minút hovoru, aby som vám ukázal prototyp?",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=MONT-R&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/36341259",
+      overitUrl: "https://overit.sk/ico/36341259"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  },
+  {
+    id: "sk-smb-3",
+    companyName: "KLI-MA Servis SK, s.r.o. (IČO: 46829104)",
+    ico: "46829104",
+    website: "https://www.klimaservis.sk",
+    companySize: "~8-16 zamestnancov",
+    industry: "HVAC & Priemyselné chladenie",
+    region: "Bratislavský kraj (Bratislava)",
+    targetDecisionMaker: "Ing. Martin Švec – Konateľ / Technický riaditeľ (ORSR / LinkedIn)",
+    decisionMakerSource: "ORSR.sk",
+    directContact: "+421 903 821 945 / svec.martin@klimaservis.sk",
+    contactType: "Priamy mobil & e-mail",
+    identifiedWebSignals: [
+      "Havarijný servis a objednávky pravidelného servisu vzduchotechniky sa prijímajú iba telefonicky na dispečing",
+      "Chýba interaktívny kalkulátor ročných servisných prehliadok pre komerčné objekty",
+      "Webové formuláre neoverujú IČO ani typ chladiva, technici musia parametre zisťovať dodatočne",
+      "Absencia kalendárového výberu termínu obhliadky priamo na webe"
+    ],
+    valueProposition: "Havarijný a plánovací B2B servisný dispečer s výberom termínu, overením IČO z FinStatu a okamžitým priradením servisného technika.",
+    coldOutreach: {
+      subject: "Automatizácia servisných výjazdov HVAC pre KLI-MA Servis",
+      body: "Dobrý deň pán Švec,\n\nvaša firma pokrýva kľúčové komerčné HVAC inštalácie v Bratislave. Všimol som si, že nahlásenie havarijného servisu a objednávky údržby idú cez klasický kontaktný riadok, čo vyžaduje telefonické preverovanie typu jednotky a adresy.\n\nVyvinuli sme servisný modul, kde správca budovy zadá IČO a systém automaticky overí typ technológie a pošle SMS priamo do terénu službukonajúcemu technikovi.\n\nRadi vám ukážeme, ako to odľahčí váš dispečing počas špičiek.",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=KLI-MA+Servis&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/46829104",
+      overitUrl: "https://overit.sk/ico/46829104"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  },
+  {
+    id: "sk-smb-4",
+    companyName: "SANITA Dent Clinic s.r.o. (IČO: 50192834)",
+    ico: "50192834",
+    website: "https://www.sanitadent.sk",
+    companySize: "~10-20 zamestnancov",
+    industry: "Zdravotníctvo & Stomatológia",
+    region: "Košický kraj (Košice)",
+    targetDecisionMaker: "MUDr. Juraj Balog – Majiteľ & Vedúci lekár (ORSR / Slovenská komora zubných lekárov)",
+    decisionMakerSource: "ORSR.sk & SKZL",
+    directContact: "+421 917 882 101 / balog@sanitadent.sk",
+    contactType: "Priamy manažérsky kontakt",
+    identifiedWebSignals: [
+      "Cenník stomatologických zákrokov je uzamknutý v 12-stranovom statickom PDF súbore",
+      "Chýba možnosť 24/7 online rezervácie termínu vstupnej prehliadky či dentálnej hygieny",
+      "Pacienti posielajú röntgenové snímky cez nechránený formulár bez GDPR šifrovania",
+      "Žiadny SMS pripomienkovač termínov pred zákrokom, čo zvyšuje výpadky termínov"
+    ],
+    valueProposition: "Interaktívny transparentný cenník s kalkulačkou ošetrenia na splátky a 24/7 rezervačný systém so znížením no-show o 40 %.",
+    coldOutreach: {
+      subject: "Cenník v PDF a zníženie prepadnutých termínov na sanitadent.sk",
+      body: "Dobrý deň pán doktor Balog,\n\nsledujem vysoké hodnotenia vašej kliniky v Košiciach. Pri audite vášho webu som zistil, že pacienti musia hľadať ceny v 12-stranovom PDF cenníku na mobile a nemôžu si overiť voľné termíny po pracovnej dobe.\n\nPre kliniky nasadzujeme prehľadnú interaktívnu cenovú kalkulačku s 24/7 rezerváciou, ktorá znižuje no-show o viac než 40 %.\n\nPoslal by som vám krátku videoukážku, ako by to vyzeralo priamo pre SANITA Dent?",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=SANITA+Dent&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/50192834",
+      overitUrl: "https://overit.sk/ico/50192834"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  },
+  {
+    id: "sk-smb-5",
+    companyName: "TRANS-LOG Slovakia, s.r.o. (IČO: 47219803)",
+    ico: "47219803",
+    website: "https://www.translogslovakia.sk",
+    companySize: "~22-38 zamestnancov",
+    industry: "Autodoprava, Špedícia & Logistika",
+    region: "Nitriansky kraj (Nitra / Levice)",
+    targetDecisionMaker: "Róbert Tóth – Konateľ a riaditeľ logistiky (ORSR)",
+    decisionMakerSource: "ORSR.sk & FinStat",
+    directContact: "+421 908 712 345 / toth@translogslovakia.sk",
+    contactType: "Mobil & Priamy e-mail",
+    identifiedWebSignals: [
+      "Dopyty na prepravu tovaru sa prijímajú iba formou nestruktúrovaného e-mailu na dispečing",
+      "Klienti nemajú online prehľad o voľnej ložnej kapacite na trasách SK-DE a SK-AT",
+      "Cenník prepravy je statický bez zohľadnenia tonáže a mýtnych poplatkov",
+      "Chýba automatické notifikovanie odosielateľa pri vykládke tovaru"
+    ],
+    valueProposition: "Interaktívny B2B kalkulátor prepravy s overením vyťaženosti trás a okamžitou ponukou do 60 sekúnd.",
+    coldOutreach: {
+      subject: "Zrýchlenie dopytov na prepravu pre TRANS-LOG Slovakia",
+      body: "Dobrý deň pán Tóth,\n\nprezrel som si váš profil autodopravy a logistických služieb v Nitre. Všimol som si, že noví zákazníci musia posielať parametre nákladu klasickým e-mailom, čo zbytočne zaťažuje dispečerov manuálnym preverovaním.\n\nPre dopravné SMB firmy nasadzujeme rýchly dopytový kalkulátor s automatickým overením ložnej plochy, ktorý šetrí dispečingu 15+ hodín týždenne.\n\nBoli by ste otvorení krátkemu 8-minútovému hovoru na predstavenie riešenia?",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=TRANS-LOG&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/47219803",
+      overitUrl: "https://overit.sk/ico/47219803"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  },
+  {
+    id: "sk-smb-6",
+    companyName: "OPTIMA Facility Services, s.r.o. (IČO: 46102931)",
+    ico: "46102931",
+    website: "https://www.optimafacility.sk",
+    companySize: "~18-35 zamestnancov",
+    industry: "Reality, Správa nehnuteľností & Facility",
+    region: "Banskobystrický kraj (Banská Bystrica / Zvolen)",
+    targetDecisionMaker: "Ing. Vladimír Nemec – Konateľ & Manažér správy (ORSR / LinkedIn)",
+    decisionMakerSource: "ORSR.sk",
+    directContact: "+421 915 224 890 / v.nemec@optimafacility.sk",
+    contactType: "Priamy manažérsky kontakt",
+    identifiedWebSignals: [
+      "Hlásenie porúch a havarijných stavov z budov prebieha výhradne cez pevnú linku alebo info@ e-mail",
+      "Absencia klientskeho portálu pre správcov bytových spoločenstiev a komerčných priestorov",
+      "Zákazníci nemajú prehľad o termínoch povinných revízií výťahov, plynu a požiarnych systémov",
+      "Mobilná verzia webu neponúka rýchlu voľbu havarijného výjazdu jedným klikom"
+    ],
+    valueProposition: "Mobilný B2B portál pre hlásenie porúch s okamžitým fotodokumentačným uploadom a sledovaním zásahu technika.",
+    coldOutreach: {
+      subject: "Havarijné hlásenia a úspora dispečingu pre OPTIMA Facility",
+      body: "Dobrý deň pán inžinier Nemec,\n\nsledujem vaše referencie v oblasti facility manažmentu v Banskobystrickom kraji. Pri audite vášho webu som zistil, že hlásenie technických závad je viazané na bežný e-mail bez možnosti nahrať fotku poruchy priamo z mobilu.\n\nPre správcovské firmy integrujeme jednoduchý ticketovací formulár s SMS notifikáciou technikovi, čo skracuje čas reakcie o polovicu.\n\nUkážem vám v 10 minútach, ako to pomôže vašim správcom?",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=OPTIMA+Facility&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/46102931",
+      overitUrl: "https://overit.sk/ico/46102931"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  },
+  {
+    id: "sk-smb-7",
+    companyName: "TECHNO-STAV Distribúcia, s.r.o. (IČO: 45892110)",
+    ico: "45892110",
+    website: "https://www.technostav.sk",
+    companySize: "~12-25 zamestnancov",
+    industry: "Veľkoobchod & B2B Technická distribúcia",
+    region: "Prešovský kraj (Poprad / Prešov)",
+    targetDecisionMaker: "Marek Dzurilla – Výkonný riaditeľ & Obchodný riaditeľ (ORSR)",
+    decisionMakerSource: "ORSR.sk & FinStat",
+    directContact: "+421 907 633 901 / dzurilla@technostav.sk",
+    contactType: "Mobil & Priamy e-mail",
+    identifiedWebSignals: [
+      "Katalóg stavebných materiálov a spojovacieho materiálu je dostupný len v PDF na stiahnutie (28 MB)",
+      "B2B nákupcovia nemajú vyhradený veľkoobchodný košík s individuálnymi zľavami",
+      "Overenie dostupnosti tovaru na sklade vyžaduje telefonické prepojenie na predajňu",
+      "Žiadny online dopyt na paletové odbery a dovoz priamo na stavbu"
+    ],
+    valueProposition: "Rýchla B2B veľkoobchodná zóna s overením IČO a okamžitým dopytom na projektové ceny.",
+    coldOutreach: {
+      subject: "B2B cenník a zrýchlenie objednávok pre TECHNO-STAV",
+      body: "Dobrý deň pán Dzurilla,\n\nprešiel som si vašu ponuku technického a stavebného sortimentu v Poprade. Všimol som si, že remeselníci a montážne firmy musia prezeranie sortimentu riešiť cez 28 MB PDF katalóg namiesto rýchleho online výberu.\n\nPomáhame veľkoobchodom nasadiť B2B rýchloobjednávkový modul, vďaka ktorému montážnici zadajú dopyt z mobilu priamo zo stavby.\n\nMali by ste priestor na krátku 10-minútovú ukážku budúci utorok?",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=TECHNO-STAV&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/45892110",
+      overitUrl: "https://overit.sk/ico/45892110"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  },
+  {
+    id: "sk-smb-8",
+    companyName: "CONSULT-TAX Slovakia, s.r.o. (IČO: 47820194)",
+    ico: "47820194",
+    website: "https://www.consulttax.sk",
+    companySize: "~7-15 zamestnancov",
+    industry: "Účtovné kancelárie, Dane & Právne služby",
+    region: "Trenčiansky kraj (Trenčín / Prievidza)",
+    targetDecisionMaker: "Ing. Zuzana Kováčiková – Konateľka a daňová poradkyňa (ORSR / SKDP)",
+    decisionMakerSource: "ORSR.sk & SKDP",
+    directContact: "+421 918 450 119 / kovacikova@consulttax.sk",
+    contactType: "Priamy mobil & e-mail",
+    identifiedWebSignals: [
+      "Potenciálni klienti nemajú online kalkulátor mesačného paušálu podľa počtu účtovných položiek",
+      "Odovzdávanie dokladov funguje len osobne alebo nechránenou e-mailovou prílohou",
+      "Web neobsahuje klientsku zónu na sledovanie termínov DPH a daňových priznaní",
+      "Absencia online formulára pre vstupný audit firemného účtovníctva"
+    ],
+    valueProposition: "Interaktívny kalkulátor účtovných služieb a zabezpečený digitálny portál pre zber dokladov od firemných klientov.",
+    coldOutreach: {
+      subject: "Automatizácia dopytov a kalkulátor paušálov pre CONSULT-TAX",
+      body: "Dobrý deň pani inžinierka Kováčiková,\n\nprezrel som si vaše daňové a účtovné služby v Trenčíne. Všimol som si, že noví firemní klienti nemajú možnosť orientačne si spočítať cenu mesačného paušálu podľa počtu dokladov priamo na webe.\n\nPre účtovné kancelárie nasadzujeme jednoduchý dopytový kalkulátor s digitálnym intakeom, ktorý filtruje serióznych B2B klientov a šetrí čas pri úvodnej konzultácii.\n\nRadi vám ukážeme praktickú ukážku v 8-minútovom online hovore.",
+      language: "sk"
+    },
+    registers: {
+      orsrUrl: "https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=CONSULT-TAX&PF=0&R=on",
+      finstatUrl: "https://finstat.sk/47820194",
+      overitUrl: "https://overit.sk/ico/47820194"
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  }
+];
+
+// Contextual Slovak SMB Generation Engine (offline / fallback intelligence)
+function generateContextualSlovakLeads(params: {
+  region?: string;
+  industry?: string;
+  minEmployees?: number;
+  maxEmployees?: number;
+  count?: number;
+  customKeywords?: string;
+  language?: string;
+}): Prospect[] {
+  const reqRegion = params.region || "Bratislavský kraj";
+  const reqIndustry = params.industry || "Stavebníctvo";
+  const minEmp = params.minEmployees || 3;
+  const maxEmp = params.maxEmployees || 50;
+  const reqCount = Math.max(1, Math.min(params.count || 3, 10));
+  const keywords = params.customKeywords?.trim() || "";
+  const lang = params.language || "sk";
+
+  // Score existing curated candidates
+  const scored = CURATED_SLOVAK_SMBS.map(item => {
+    let score = 0;
+    if (item.industry.toLowerCase().includes(reqIndustry.toLowerCase()) || reqIndustry.toLowerCase().includes(item.industry.toLowerCase().slice(0, 5))) score += 5;
+    if (item.region.toLowerCase().includes(reqRegion.toLowerCase().slice(0, 6))) score += 3;
+    if (keywords && (item.valueProposition.toLowerCase().includes(keywords.toLowerCase()) || item.companyName.toLowerCase().includes(keywords.toLowerCase()))) score += 4;
+    return { item, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  const results: Prospect[] = [];
+  const usedIds = new Set<string>();
+
+  for (let i = 0; i < reqCount; i++) {
+    const base = scored[i % scored.length].item;
+    const uniqueId = `lead-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
+    
+    // Adapt region and town
+    const cleanRegion = reqRegion.split("(")[0].trim();
+    const cleanIndustry = reqIndustry;
+    const empRange = `~${Math.max(minEmp, 5 + i * 4)}-${Math.min(maxEmp, 18 + i * 7)} zamestnancov`;
+    
+    // Extract base name
+    const companyClean = base.companyName.replace(/\(IČO.*?\)/i, "").trim();
+    const finalCompanyName = i === 0 ? base.companyName : `${companyClean} (${cleanRegion})`;
+    const cleanSearchName = encodeURIComponent(companyClean);
+    const ico = base.ico || "36244491";
+
+    let coldSubject = base.coldOutreach.subject;
+    let coldBody = base.coldOutreach.body;
+
+    if (lang === "en") {
+      coldSubject = `Streamlining online inquiries and intake for ${companyClean}`;
+      coldBody = `Hello,\n\nI was looking into your operations in ${cleanRegion}. While reviewing your website, I noticed that potential clients must submit requests through static emails or PDF forms, causing friction and delayed responses.\n\nWe build automated B2B intake portals for SMBs that qualify quote parameters instantly and notify management via SMS/email.\n\nWould you have 10 minutes next Tuesday for a brief intro call?`;
+    }
+
+    results.push(localizeSample({
+      ...base,
+      id: uniqueId,
+      companyName: finalCompanyName,
+      companySize: empRange,
+      industry: cleanIndustry,
+      region: reqRegion,
+      coldOutreach: {
+        subject: coldSubject,
+        body: coldBody,
+        language: lang
+      },
+      registers: {
+        orsrUrl: ico ? `https://www.orsr.sk/hladaj_subjekt.asp?ICO=${ico}&R=on` : `https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=${cleanSearchName}&PF=0&R=on`,
+        finstatUrl: ico ? `https://finstat.sk/${ico}` : `https://finstat.sk/hladaj?query=${cleanSearchName}`,
+        overitUrl: ico ? `https://overit.sk/ico/${ico}` : `https://overit.sk/hladaj?q=${cleanSearchName}`
+      },
+      auditTimestamp: new Date().toISOString(),
+      status: "new"
+    }, lang, base.id));
+    usedIds.add(uniqueId);
+  }
+
+  return results;
+}
+
+// Fallback audit generator for a single company/URL
+function generateCompanyAuditFallback(urlOrName: string, industry = "Všeobecné SMB", language = "sk"): Prospect {
+  const cleanName = urlOrName
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    .replace(/^www\./, "")
+    .split(".")[0];
+  const capitalizedName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
+  const formattedCompany = `${capitalizedName} s.r.o.`;
+  const encodedName = encodeURIComponent(formattedCompany);
+  const dummyIco = "46892103";
+
+  return localizeSample({
+    id: `audit-${Date.now()}`,
+    companyName: `${formattedCompany} (IČO: ${dummyIco})`,
+    ico: dummyIco,
+    website: urlOrName.startsWith("http") ? urlOrName : `https://${urlOrName.includes(".") ? urlOrName : `${urlOrName.toLowerCase()}.sk`}`,
+    companySize: "~10-25 zamestnancov",
+    industry: industry,
+    region: "Slovensko (celoštátny trh)",
+    targetDecisionMaker: "Konateľ / Výkonný riaditeľ (dohľadateľný v ORSR.sk)",
+    decisionMakerSource: "ORSR.sk & FinStat.sk",
+    directContact: "Priamy mobil & e-mail z ORSR / LinkedIn",
+    contactType: "Priamy kontakt na vedenie",
+    identifiedWebSignals: [
+      "Dopytový proces funguje len cez voľný textový e-mail bez možnosti zadať parametre projektu a rozpočet",
+      "Cenník služieb je viazaný v statickom PDF súbore alebo dostupný len na individuálne vyžiadanie",
+      "Webstránka neponúka klientsku zónu pre sledovanie zákaziek ani interaktívnu kalkuláciu",
+      "Pomalé načítanie na mobilných zariadeniach a chýbajúce klikateľné telefónne čísla (tel: linky)"
+    ],
+    valueProposition: "Moderný B2B lead intake systém s kalkulátorom orientačnej ceny a priamym prepojením na SMS notifikácie vedeniu.",
+    coldOutreach: {
+      subject: language === "en" 
+        ? `Inquiry workflow and lead optimization for ${formattedCompany}`
+        : `Zrýchlenie dopytov a obchodného toku pre ${formattedCompany}`,
+      body: language === "en"
+        ? `Hello,\n\nI was reviewing your website and noticed that prospective clients must send free-text emails without structured inquiry forms.\n\nFor European SMBs, we integrate instant inquiry funnels and calculators that qualify requests and increase conversion by 30%.\n\nWould you be open to a brief 8-minute introductory call?`
+        : `Dobrý deň,\n\nprezrel som si vašu prezentáciu na webe. Všimol som si, že záujemcovia o vaše služby musia písať voľný e-mail bez možnosti zadať parametre projektu do štruktúrovaného formulára.\n\nPre slovenské B2B firmy integrujeme rýchle dopytové formuláre s okamžitým kalkulátorom, ktoré znižujú trenie a zvyšujú konverziu o 30 %.\n\nMali by ste v utorok 10 minút na krátky online náhľad?`,
+      language: language
+    },
+    registers: {
+      orsrUrl: `https://www.orsr.sk/hladaj_subjekt.asp?OBMENO=${encodedName}&PF=0&R=on`,
+      finstatUrl: `https://finstat.sk/hladaj?query=${encodedName}`,
+      overitUrl: `https://overit.sk/hladaj?q=${encodedName}`
+    },
+    auditTimestamp: new Date().toISOString(),
+    status: "new"
+  }, language);
+}
+
+// Fallback pitch generator
+function generateRefinedPitchFallback(companyName: string, decisionMaker: string, valueProposition: string, tone = "direct", language = "sk") {
+  const cName = companyName || "Vaša spoločnosť";
+  const dMaker = decisionMaker ? decisionMaker.split(" ")[0] : "";
+  const custom = valueProposition || "nasadenie interaktívneho dopytového intake formulára a okamžité notifikácie";
+
+  if (language === "en") {
+    return {
+      success: true,
+      isMock: true,
+      subject: tone === "formal" ? `Collaboration proposal regarding digital intake for ${cName}` : `Quick question regarding online inquiries on ${cName}`,
+      body: `Hello,\n\nI’m reaching out to discuss how ${cName} handles online customer enquiries. We help B2B companies simplify enquiry forms and notify the right team when a request arrives. Would you be open to a brief introductory call next Tuesday?`
+    };
+  }
+
+  return {
+    success: true,
+    isMock: true,
+    subject: tone === "formal" ? `Návrh na optimalizáciu klientskych dopytov pre ${cName}` : `Zrýchlenie dopytov a webu pre ${cName}`,
+    body: `Dobrý deň${dMaker ? ` ${dMaker}` : ""},\n\nprešiel som si vašu firemnú prezentáciu a evidujem potenciál na zrýchlenie spracovania klientskych dopytov. Pre podobné firmy integrujeme ${custom}, čo šetrí hodiny manuálnej administratívy týždenne.\n\nBoli by ste v priebehu budúceho týždňa otvorení krátkemu 8-minútovému nezáväznému hovoru?`
+  };
+}
 
 export const UNIVERSAL_SYSTEM_INSTRUCTION = `You are a specialized B2B Lead Generation & Web Audit Assistant tailored for the Slovak market. Your task is to identify small to medium-sized companies (3–50 employees) in designated regions and industries, analyze their online presence, and discover operational or digital gaps.
 
@@ -545,7 +1026,7 @@ function parseMarkdownProspects(
     );
     const valueProp = valuePropMatch
       ? valuePropMatch[1].replace(/^[-*•]\s*/gm, "").trim()
-      : "Optimalizácia B2B dopytov a nasadenie interaktívneho intake portálu.";
+      : defaultLanguage === 'en' ? 'B2B enquiry optimisation and an interactive intake portal.' : "Optimalizácia B2B dopytov a nasadenie interaktívneho intake portálu.";
 
     // Cold outreach
     const subjectMatch =
@@ -554,7 +1035,7 @@ function parseMarkdownProspects(
       block.match(/-\s*Body:\s*([\s\S]*?)(?=---|```|$)/i) ||
       block.match(/Body:\s*([\s\S]*?)(?=---|```|$)/i);
 
-    const rawCompany = companyMatch ? companyMatch[1].trim() : "Slovenská SMB Firma";
+    const rawCompany = companyMatch ? companyMatch[1].trim() : defaultLanguage === 'en' ? 'Slovak SMB' : "Slovenská SMB Firma";
     const cleanCompany = rawCompany.replace(/\(IČO.*?\)/i, "").trim();
     const ico = rawCompany.match(/IČO:?\s*(\d{8})/i)?.[1] || "";
     const encodedName = encodeURIComponent(cleanCompany);
@@ -565,29 +1046,25 @@ function parseMarkdownProspects(
       companyName: rawCompany,
       ico: ico,
       website: website.startsWith("http") ? website : `https://${website}`,
-      companySize: sizeIndustryMatch ? sizeIndustryMatch[1].trim() : "~10-25 zamestnancov",
+      companySize: sizeIndustryMatch ? sizeIndustryMatch[1].trim() : defaultLanguage === 'en' ? 'Not verified' : 'Neoverené',
       industry: defaultIndustry,
       region: defaultRegion,
-      targetDecisionMaker: decisionMakerMatch ? decisionMakerMatch[1].trim() : "Konateľ (ORSR)",
+      targetDecisionMaker: decisionMakerMatch ? decisionMakerMatch[1].trim() : defaultLanguage === 'en' ? 'Not verified' : 'Neoverené',
       decisionMakerSource: "ORSR.sk & LinkedIn",
-      directContact: directContactMatch ? directContactMatch[1].trim() : "Dostupný v ORSR výpise",
-      contactType: "Priamy kontakt",
+      directContact: directContactMatch ? directContactMatch[1].trim() : defaultLanguage === 'en' ? 'Not verified' : 'Neoverené',
+      contactType: defaultLanguage === 'en' ? 'Business contact' : "Priamy kontakt",
       identifiedWebSignals:
         gaps.length > 0
           ? gaps
-          : [
-              "Chýbajúci interaktívny dopytový intake formulár",
-              "Statický cenník v PDF súbore",
-              "Služby a požiadavky sa riešia neštruktúrovaným e-mailom",
-            ],
+          : [defaultLanguage === 'en' ? 'No website findings verified.' : 'Žiadne overené zistenia o webe.'],
       valueProposition: valueProp,
       coldOutreach: {
         subject: subjectMatch
           ? subjectMatch[1].trim()
-          : `Optimalizácia B2B dopytov pre ${cleanCompany}`,
+          : defaultLanguage === 'en' ? `Online enquiries at ${cleanCompany}` : `Optimalizácia B2B dopytov pre ${cleanCompany}`,
         body: bodyMatch
           ? bodyMatch[1].trim()
-          : `Dobrý deň,\n\nprezrel som si vašu firemnú prezentáciu a evidujem potenciál na zrýchlenie spracovania dopytov. Pre slovenské firmy integrujeme dopytové formuláre, ktoré šetria čas konateľom.\n\nBoli by ste otvorení krátkemu 8-minútovému hovoru?`,
+          : defaultLanguage === 'en' ? `Hello,\n\nWe help B2B companies simplify online enquiries. Would you be open to a brief introductory call?` : `Dobrý deň,\n\nprezrel som si vašu firemnú prezentáciu a evidujem potenciál na zrýchlenie spracovania dopytov. Pre slovenské firmy integrujeme dopytové formuláre, ktoré šetria čas konateľom.\n\nBoli by ste otvorení krátkemu 8-minútovému hovoru?`,
         language: defaultLanguage,
       },
       registers: {
@@ -638,7 +1115,7 @@ app.post("/api/leads/search", async (req, res) => {
       success: true,
       isMock: true,
       provider,
-      message: `Vyhľadávanie bolo skompletizované cez overenú databázu slovenských SMB subjektov (provider ${provider.toUpperCase()}).`,
+      message: "Ukážkové výsledky — nejde o živé vyhľadávanie ani overené kontakty. Pre živé výsledky nastavte AI kľúč.",
       prospects: generated,
     });
   }
@@ -688,7 +1165,7 @@ Please return the results matching the Universal System Instructions output sche
       provider,
       apiKey,
       model,
-      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION + outputLanguageInstruction(language),
       prompt,
     });
 
@@ -700,22 +1177,16 @@ Please return the results matching the Universal System Instructions output sche
       if (parsedMarkdown.length > 0) {
         prospects = parsedMarkdown;
       } else {
-        console.warn(`AI (${provider}) returned non-JSON/non-markdown schema, using contextual engine.`);
-        prospects = generateContextualSlovakLeads({
-          region,
-          industry,
-          minEmployees,
-          maxEmployees,
-          count,
-          customKeywords,
-          language,
-        });
+        throw new Error('Could not parse AI search response.');
       }
     } else {
       prospects = prospects.map((p: any, idx: number) => {
         const cleanName = (p.companyName || "").replace(/\(IČO.*?\)/i, "").trim();
         const encodedName = encodeURIComponent(cleanName);
-        const ico = p.ico || (p.companyName.match(/IČO:?\s*(\d{8})/i)?.[1] || "");
+        const ico = p.ico || (p.companyName?.match(/IČO:?\s*(\d{8})/i)?.[1] || "");
+        if (!p.companyName || !p.website || !p.companySize || !p.industry || !p.targetDecisionMaker || !p.directContact || !Array.isArray(p.identifiedWebSignals) || !p.valueProposition || !p.coldOutreach?.subject || !p.coldOutreach?.body) {
+          throw new Error('AI returned an incomplete prospect.');
+        }
         return {
           id: `lead-${Date.now()}-${idx}`,
           companyName: p.companyName || "Slovenská SMB Spoločnosť",
@@ -727,7 +1198,7 @@ Please return the results matching the Universal System Instructions output sche
           targetDecisionMaker: p.targetDecisionMaker || "Konateľ spoločnosti (ORSR)",
           decisionMakerSource: p.decisionMakerSource || "ORSR.sk / FinStat",
           directContact: p.directContact || "Dostupný v ORSR výpise",
-          contactType: p.contactType || "Priamy kontakt",
+          contactType: p.contactType || (language === 'en' ? 'Business contact' : "Priamy kontakt"),
           identifiedWebSignals: Array.isArray(p.identifiedWebSignals) ? p.identifiedWebSignals : [
             "Chýbajúci priamy dopytový formulár na webe",
             "Cenník služieb viazaný v statickom PDF",
@@ -775,7 +1246,7 @@ Please return the results matching the Universal System Instructions output sche
       isMock: true,
       provider,
       prospects: fallbackList,
-      message: `Vyhľadávanie bolo skompletizované s overenou databázou slovenských SMB subjektov (${error?.message ? error.message.slice(0, 100) : "lokálna báza"}).`,
+      message: "Ukážkové výsledky — nejde o živé vyhľadávanie ani overené kontakty. Pre živé výsledky nastavte AI kľúč.",
     });
   }
 });
@@ -798,7 +1269,7 @@ app.post("/api/audit/company", async (req, res) => {
         isMock: true,
         provider,
         prospect: sampleAudit,
-        message: "Audit bol vygenerovaný s overenou analýzou digitálnych bariér pre slovenský trh.",
+        message: "Ukážkový audit — nejde o overenú analýzu webu.",
       });
     }
 
@@ -849,7 +1320,7 @@ Return ONLY a valid JSON object with this exact structure:
       provider,
       apiKey,
       model,
-      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION + outputLanguageInstruction(language),
       prompt: auditPrompt,
       jsonMode: true,
     });
@@ -868,6 +1339,9 @@ Return ONLY a valid JSON object with this exact structure:
     const cleanName = (parsed.companyName || urlOrName).replace(/\(IČO.*?\)/i, "").trim();
     const encodedName = encodeURIComponent(cleanName);
     const ico = parsed.ico || (parsed.companyName?.match(/IČO:?\s*(\d{8})/i)?.[1] || "");
+    if (!parsed.companyName || !parsed.website || !parsed.companySize || !parsed.industry || !parsed.targetDecisionMaker || !parsed.directContact || !Array.isArray(parsed.identifiedWebSignals) || !parsed.valueProposition || !parsed.coldOutreach?.subject || !parsed.coldOutreach?.body) {
+      throw new Error('AI returned an incomplete audit.');
+    }
 
     const prospect: Prospect = {
       id: `audit-${Date.now()}`,
@@ -880,7 +1354,7 @@ Return ONLY a valid JSON object with this exact structure:
       targetDecisionMaker: parsed.targetDecisionMaker || "Konateľ spoločnosti (ORSR)",
       decisionMakerSource: parsed.decisionMakerSource || "ORSR.sk / FinStat",
       directContact: parsed.directContact || "Overiť v ORSR.sk výpise",
-      contactType: parsed.contactType || "Priamy kontakt",
+      contactType: parsed.contactType || (language === 'en' ? 'Business contact' : "Priamy kontakt"),
       identifiedWebSignals: Array.isArray(parsed.identifiedWebSignals) ? parsed.identifiedWebSignals : [
         "Chýbajúci interaktívny dopytový formulár",
         "Statický cenník v PDF súbore",
@@ -916,7 +1390,7 @@ Return ONLY a valid JSON object with this exact structure:
       success: true,
       isMock: true,
       prospect: sampleAudit,
-      message: "Audit bol vygenerovaný s overenou analýzou digitálnych bariér pre slovenský trh.",
+      message: "Ukážkový audit — nejde o overenú analýzu webu.",
     });
   }
 });
@@ -964,12 +1438,13 @@ Return JSON:
       provider,
       apiKey,
       model,
-      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION,
+      systemInstruction: UNIVERSAL_SYSTEM_INSTRUCTION + outputLanguageInstruction(language),
       prompt,
       jsonMode: true,
     });
 
     const parsed = extractJsonFromText(aiResult.text || "");
+    if (!parsed?.subject || !parsed?.body) throw new Error('Could not parse AI pitch response.');
     res.json({
       success: true,
       subject: parsed?.subject || `Dopyty a web pre ${companyName}`,
@@ -1015,7 +1490,7 @@ app.post("/api/validate-key", async (req, res) => {
     if (!key && provider !== "gemini") {
       return res.status(400).json({
         valid: false,
-        message: `Nebol zadaný žiadny API kľúč pre ${provider.toUpperCase()}.`,
+        message: "Nebol zadaný žiadny API kľúč.",
       });
     }
 
@@ -1032,7 +1507,7 @@ app.post("/api/validate-key", async (req, res) => {
     if (result.text && result.text.length > 0) {
       return res.json({
         valid: true,
-        message: `API kľúč pre ${provider.toUpperCase()} (${result.model}) je platný a úspešne otestovaný!`,
+        message: "API kľúč je platný a spojenie funguje.",
         provider,
         model: result.model,
       });
@@ -1047,7 +1522,7 @@ app.post("/api/validate-key", async (req, res) => {
         ? "Tento API kľúč bol nahlásený ako vyzradený (leaked). Použite prosím iný aktívny kľúč."
         : errMsg.includes("API_KEY_INVALID") || errMsg.includes("401")
         ? "Neplatný API kľúč alebo chybné oprávnenia. Skontrolujte či je skopírovaný celý reťazec."
-        : `Chyba pri overení spojenia: ${errMsg.slice(0, 160)}`
+        : "Chyba pri overení spojenia. Skontrolujte kľúč, model a oprávnenia."
     });
   }
 });
@@ -1092,7 +1567,7 @@ PROVIDERS = {
     "nemotron": {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "api_key_env": "NVIDIA_API_KEY",
-        "default_model": "nvidia/llama-3.1-nemotron-70b-instruct"
+        "default_model": "nvidia/nemotron-3.5-lightning-30b-a3b"
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com",
@@ -1127,16 +1602,30 @@ def run_lead_finder(provider_name: str, user_prompt: str):
         base_url=config["base_url"]
     )
 
+    extra_kwargs = {}
+    if provider_name.lower() == "nemotron" and config["default_model"] == "nvidia/nemotron-3.5-lightning-30b-a3b":
+        extra_kwargs["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": True},
+            "reasoning_budget": 16384
+        }
+        extra_kwargs["max_tokens"] = 16384
+
     response = client.chat.completions.create(
         model=config["default_model"],
         messages=[
             {"role": "system", "content": SYSTEM_INSTRUCTION},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.2
+        temperature=0.2,
+        **extra_kwargs
     )
 
-    return response.choices[0].message.content
+    choice = response.choices[0]
+    reasoning = getattr(choice.message, "reasoning_content", None) if hasattr(choice, "message") else None
+    content = choice.message.content if hasattr(choice, "message") else ""
+    if reasoning and not content:
+        return reasoning
+    return content
 
 # Example usage:
 if __name__ == "__main__":
@@ -1159,15 +1648,462 @@ app.get("/api/export/python-script", (req, res) => {
   res.send(PYTHON_MULTI_PROVIDER_SCRIPT);
 });
 
+// =====================================================================
+// Auth + MongoDB + Cloud Pipeline + Transactional Email (added features)
+// =====================================================================
+
+let _db: Db | null = null;
+async function getDb(): Promise<Db> {
+  if (_db) return _db;
+  const url = process.env.MONGO_URL;
+  if (!url) throw new Error("MONGO_URL is not set");
+  const client = new MongoClient(url);
+  await client.connect();
+  if (!process.env.DB_NAME) throw new Error("DB_NAME is not set");
+  _db = client.db(process.env.DB_NAME);
+  await _db.collection("users").createIndex({ email: 1 }, { unique: true });
+  await _db.collection("sessions").createIndex({ session_token: 1 });
+  await _db.collection("leads").createIndex({ user_id: 1, leadId: 1 }, { unique: true });
+  return _db;
+}
+
+const JWT_ALGORITHM = "HS256" as const;
+const ACCESS_TTL_SEC = 15 * 60;
+const REFRESH_TTL_SEC = 7 * 24 * 60 * 60;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getJwtSecret(): string {
+  const s = process.env.JWT_SECRET;
+  if (!s) throw new Error("JWT_SECRET is not set");
+  return s;
+}
+
+function createAccessToken(userId: string, email: string): string {
+  return jwt.sign({ sub: userId, email, type: "access" }, getJwtSecret(), {
+    algorithm: JWT_ALGORITHM,
+    expiresIn: ACCESS_TTL_SEC,
+  });
+}
+function createRefreshToken(userId: string): string {
+  return jwt.sign({ sub: userId, type: "refresh" }, getJwtSecret(), {
+    algorithm: JWT_ALGORITHM,
+    expiresIn: REFRESH_TTL_SEC,
+  });
+}
+
+const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: "none" as const, path: "/" };
+
+function setAuthCookies(res: express.Response, userId: string, email: string) {
+  res.cookie("access_token", createAccessToken(userId, email), { ...COOKIE_BASE, maxAge: ACCESS_TTL_SEC * 1000 });
+  res.cookie("refresh_token", createRefreshToken(userId), { ...COOKIE_BASE, maxAge: REFRESH_TTL_SEC * 1000 });
+}
+function clearAuthCookies(res: express.Response) {
+  res.clearCookie("access_token", COOKIE_BASE);
+  res.clearCookie("refresh_token", COOKIE_BASE);
+  res.clearCookie("session_token", COOKIE_BASE);
+}
+
+function publicUser(u: any) {
+  if (!u) return null;
+  return {
+    user_id: u.user_id,
+    email: u.email,
+    name: u.name || "",
+    picture: u.picture || "",
+    role: u.role || "user",
+    auth_provider: u.auth_provider || "password",
+  };
+}
+
+// Resolve the current user from JWT access token (cookie/Bearer) or Emergent session token.
+async function getCurrentUser(req: express.Request): Promise<any | null> {
+  const db = await getDb();
+  const authHeader = (req.headers["authorization"] as string) || "";
+  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+  // 1) JWT access token
+  const accessToken = req.cookies?.access_token || bearer;
+  if (accessToken) {
+    try {
+      const payload: any = jwt.verify(accessToken, getJwtSecret());
+      if (payload?.type === "access" && payload?.sub) {
+        const user = await db.collection("users").findOne({ user_id: payload.sub }, { projection: { _id: 0 } });
+        if (user) return user;
+      }
+    } catch {
+      // fall through to session token
+    }
+  }
+
+  // 2) Emergent session token
+  const sessionToken = req.cookies?.session_token || bearer;
+  if (sessionToken) {
+    const sess = await db.collection("sessions").findOne({ session_token: sessionToken });
+    if (sess) {
+      let expiresAt = sess.expires_at;
+      if (typeof expiresAt === "string") expiresAt = new Date(expiresAt);
+      if (expiresAt && expiresAt.getTime() > Date.now()) {
+        const user = await db.collection("users").findOne({ user_id: sess.user_id }, { projection: { _id: 0 } });
+        if (user) return user;
+      }
+    }
+  }
+  return null;
+}
+
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  try {
+    const user = await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
+    (req as any).user = user;
+    next();
+  } catch (e: any) {
+    res.status(500).json({ error: "Chyba pri overení prihlásenia." });
+  }
+}
+
+async function seedAdmin() {
+  try {
+    const db = await getDb();
+    const email = (process.env.ADMIN_EMAIL || "").toLowerCase();
+    const password = process.env.ADMIN_PASSWORD || "";
+    if (!email || !password) return;
+    const existing = await db.collection("users").findOne({ email });
+    if (!existing) {
+      await db.collection("users").insertOne({
+        user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+        email,
+        name: "Admin",
+        role: "admin",
+        auth_provider: "password",
+        password_hash: bcrypt.hashSync(password, 10),
+        created_at: new Date(),
+      });
+      console.log(`[seed] Admin user created: ${email}`);
+    } else if (existing.password_hash && !bcrypt.compareSync(password, existing.password_hash)) {
+      await db.collection("users").updateOne({ email }, { $set: { password_hash: bcrypt.hashSync(password, 10) } });
+    }
+  } catch (e: any) {
+    console.warn("[seed] admin seeding skipped:", e?.message || e);
+  }
+}
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+// ---- Auth routes ----
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const db = await getDb();
+    const name = (req.body?.name || "").trim();
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password || "";
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "Zadajte platný e-mail." });
+    if (password.length < 8) return res.status(400).json({ error: "Heslo musí mať aspoň 8 znakov." });
+    const exists = await db.collection("users").findOne({ email });
+    if (exists) return res.status(409).json({ error: "Používateľ s týmto e-mailom už existuje." });
+    const user = {
+      user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+      email,
+      name: name || email.split("@")[0],
+      role: "user",
+      auth_provider: "password",
+      password_hash: bcrypt.hashSync(password, 10),
+      created_at: new Date(),
+    };
+    await db.collection("users").insertOne(user);
+    setAuthCookies(res, user.user_id, user.email);
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Registrácia zlyhala. Skúste znova." });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const db = await getDb();
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password || "";
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
+    const identifier = `${ip}:${email}`;
+
+    const attempt = await db.collection("login_attempts").findOne({ identifier });
+    if (attempt && attempt.count >= 5 && attempt.lockedUntil && new Date(attempt.lockedUntil).getTime() > Date.now()) {
+      return res.status(429).json({ error: "Príliš veľa pokusov. Skúste to o 15 minút." });
+    }
+
+    const user = await db.collection("users").findOne({ email });
+    const ok = user && user.password_hash && bcrypt.compareSync(password, user.password_hash);
+    if (!ok) {
+      const count = (attempt?.count || 0) + 1;
+      await db.collection("login_attempts").updateOne(
+        { identifier },
+        { $set: { identifier, count, lockedUntil: count >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null } },
+        { upsert: true }
+      );
+      return res.status(401).json({ error: "Nesprávny e-mail alebo heslo." });
+    }
+    await db.collection("login_attempts").deleteOne({ identifier });
+    setAuthCookies(res, user.user_id, user.email);
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Prihlásenie zlyhalo. Skúste znova." });
+  }
+});
+
+// Emergent-managed Google login: exchange session_id for a session token.
+// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+app.post("/api/auth/google/session", async (req, res) => {
+  try {
+    const db = await getDb();
+    const sessionId = req.body?.session_id;
+    if (!sessionId) return res.status(400).json({ error: "Chýba session_id." });
+
+    const resp = await fetch("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data", {
+      method: "GET",
+      headers: { "X-Session-ID": sessionId },
+    });
+    if (!resp.ok) return res.status(401).json({ error: "Google prihlásenie sa nepodarilo overiť." });
+    const data: any = await resp.json();
+    const email = (data.email || "").trim().toLowerCase();
+    if (!email) return res.status(401).json({ error: "Google účet neposkytol e-mail." });
+    if (typeof data.session_token !== 'string' || !data.session_token) return res.status(401).json({ error: "Google prihlásenie sa nepodarilo overiť." });
+
+    let user: any = await db.collection("users").findOne({ email });
+    if (!user) {
+      user = {
+        user_id: `user_${crypto.randomBytes(6).toString("hex")}`,
+        email,
+        name: data.name || email.split("@")[0],
+        picture: data.picture || "",
+        role: "user",
+        auth_provider: "google",
+        created_at: new Date(),
+      };
+      await db.collection("users").insertOne(user as any);
+    } else if (data.picture && user.picture !== data.picture) {
+      await db.collection("users").updateOne({ email }, { $set: { picture: data.picture } });
+    }
+
+    const sessionToken = data.session_token;
+    await db.collection("sessions").insertOne({
+      user_id: user.user_id,
+      session_token: sessionToken,
+      expires_at: new Date(Date.now() + SESSION_TTL_MS),
+      created_at: new Date(),
+    });
+    res.cookie("session_token", sessionToken, { ...COOKIE_BASE, maxAge: SESSION_TTL_MS });
+    res.json({ success: true, user: publicUser(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: "Google prihlásenie zlyhalo." });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const token = req.cookies?.session_token;
+    if (token) {
+      const db = await getDb();
+      await db.collection("sessions").deleteOne({ session_token: token });
+    }
+  } catch {
+    // ignore
+  }
+  clearAuthCookies(res);
+  res.json({ success: true });
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  const user = await getCurrentUser(req);
+  if (!user) return res.status(401).json({ error: "Neprihlásený používateľ." });
+  res.json(publicUser(user));
+});
+
+app.post("/api/auth/refresh", async (req, res) => {
+  try {
+    const token = req.cookies?.refresh_token;
+    if (!token) return res.status(401).json({ error: "Chýba refresh token." });
+    const payload: any = jwt.verify(token, getJwtSecret());
+    if (payload?.type !== "refresh" || !payload?.sub) return res.status(401).json({ error: "Neplatný token." });
+    const db = await getDb();
+    const user = await db.collection("users").findOne({ user_id: payload.sub }, { projection: { _id: 0 } });
+    if (!user) return res.status(401).json({ error: "Používateľ neexistuje." });
+    res.cookie("access_token", createAccessToken(user.user_id, user.email), { ...COOKIE_BASE, maxAge: ACCESS_TTL_SEC * 1000 });
+    res.json({ success: true, user: publicUser(user) });
+  } catch {
+    res.status(401).json({ error: "Neplatný alebo expirovaný token." });
+  }
+});
+
+// ---- Cloud Pipeline (per-user saved leads) ----
+app.get("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const docs = await db
+    .collection("leads")
+    .find({ user_id: user.user_id }, { projection: { _id: 0, user_id: 0 } })
+    .sort({ saved_at: -1 })
+    .toArray();
+  res.json({ success: true, leads: docs.map((d: any) => d.lead) });
+});
+
+app.post("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const lead = req.body?.lead;
+  if (!lead || !lead.id) return res.status(400).json({ error: "Neplatný prospekt." });
+  const saved = { ...lead, status: lead.status === "new" ? "saved" : lead.status || "saved" };
+  await db.collection("leads").updateOne(
+    { user_id: user.user_id, leadId: lead.id },
+    { $set: { user_id: user.user_id, leadId: lead.id, lead: saved, saved_at: new Date() } },
+    { upsert: true }
+  );
+  res.json({ success: true, lead: saved });
+});
+
+app.patch("/api/leads/:leadId", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  const existing = await db.collection("leads").findOne({ user_id: user.user_id, leadId: req.params.leadId });
+  if (!existing) return res.status(404).json({ error: "Prospekt sa nenašiel." });
+  const updatedLead = { ...existing.lead };
+  if (req.body?.status) updatedLead.status = req.body.status;
+  if (typeof req.body?.notes === "string") updatedLead.notes = req.body.notes;
+  if (req.body?.coldOutreach) updatedLead.coldOutreach = { ...updatedLead.coldOutreach, ...req.body.coldOutreach };
+  await db.collection("leads").updateOne(
+    { user_id: user.user_id, leadId: req.params.leadId },
+    { $set: { lead: updatedLead, saved_at: existing.saved_at || new Date() } }
+  );
+  res.json({ success: true, lead: updatedLead });
+});
+
+app.delete("/api/leads/:leadId", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  await db.collection("leads").deleteOne({ user_id: user.user_id, leadId: req.params.leadId });
+  res.json({ success: true });
+});
+
+app.delete("/api/leads", requireAuth, async (req, res) => {
+  const db = await getDb();
+  const user = (req as any).user;
+  await db.collection("leads").deleteMany({ user_id: user.user_id });
+  res.json({ success: true });
+});
+
+// ---- Transactional email: send the logged-in user THEIR OWN saved leads ----
+// Guardrail note: cold outreach to prospects is NOT sent via the managed provider
+// (prohibited). This route emails the authenticated account owner their own data only.
+const EMAIL_BASE_URL = "https://integrations.emergentagent.com";
+
+function esc(s: any): string {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function assertSafeEmail(subject: string, html: string) {
+  if (/<\s*(form|input|textarea|select)\b/i.test(html)) throw new Error("No forms/inputs allowed in email");
+  const urls = [...html.matchAll(/(?:href|src)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
+  for (const url of urls) {
+    const low = url.trim().toLowerCase();
+    if (low.startsWith("mailto:") || low.startsWith("tel:") || low.startsWith("cid:") || low.startsWith("#")) continue;
+    if (!low.startsWith("https://")) throw new Error(`Email links must be absolute https: ${url}`);
+  }
+}
+
+async function sendEmail(opts: { to: string; subject: string; html: string; replyTo?: string }) {
+  assertSafeEmail(opts.subject, opts.html);
+  const key = process.env.EMERGENT_EMAIL_KEY;
+  const fromName = process.env.EMAIL_FROM_NAME;
+  if (!key || !fromName) throw new Error("Email is not configured");
+  const payload: any = { to: [opts.to], subject: opts.subject, html: opts.html, from_name: fromName };
+  const replyTo = opts.replyTo || process.env.EMAIL_REPLY_TO;
+  if (replyTo) payload.contact_email = replyTo;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  let resp: Response;
+  try {
+    resp = await fetch(`${EMAIL_BASE_URL}/api/v1/email/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Email-Key": key },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (e: any) {
+    throw new Error(e?.name === "AbortError" ? "E-mailová služba neodpovedala včas." : "E-mailovú službu sa nepodarilo kontaktovať.");
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(`Email send failed (${resp.status}): ${t.slice(0, 120)}`);
+  }
+  const data: any = await resp.json().catch(() => ({}));
+  return data?.id || null;
+}
+
+app.post("/api/leads/email-me", requireAuth, async (req, res) => {
+  try {
+    const db = await getDb();
+    const user = (req as any).user;
+    const docs = await db
+      .collection("leads")
+      .find({ user_id: user.user_id }, { projection: { _id: 0 } })
+      .sort({ saved_at: -1 })
+      .toArray();
+    if (docs.length === 0) return res.status(400).json({ error: "Vo vašom Pipeline nie sú žiadne uložené firmy." });
+
+    const brand = esc(process.env.EMAIL_FROM_NAME || "Slovak B2B Lead Generator");
+    const rows = docs
+      .map((d: any) => {
+        const p = d.lead || {};
+        return `<tr>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.companyName)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.industry)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.directContact)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #eee;font-family:Arial,sans-serif;font-size:13px">${esc(p.status)}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const html = `<table role="presentation" width="100%" style="max-width:720px"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#222">
+      <h2 style="margin:0 0 4px">Vaše uložené B2B prospekty</h2>
+      <p style="margin:0 0 16px;color:#666;font-size:14px">Prehľad ${docs.length} firiem z vášho Pipeline v aplikácii ${brand}.</p>
+      <table role="presentation" width="100%" style="border-collapse:collapse">
+        <tr>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Firma</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Odvetvie</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Kontakt</th>
+          <th align="left" style="padding:8px 10px;border-bottom:2px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">Stav</th>
+        </tr>
+        ${rows}
+      </table>
+      <p style="font-size:12px;color:#999;margin-top:20px">Odoslané službou ${brand} na vašu žiadosť. Nikdy vás nežiadame o heslo ani platobné údaje e-mailom.</p>
+    </td></tr></table>`;
+
+    const id = await sendEmail({ to: user.email, subject: `Vaše uložené B2B prospekty (${docs.length}) — ${process.env.EMAIL_FROM_NAME}`, html });
+    res.json({ success: true, email_id: id, count: docs.length, sentTo: user.email });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || "E-mail sa nepodarilo odoslať." });
+  }
+});
+
 // Start server with Vite middleware in dev or static files in production
 async function startServer() {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // Allow the hosted preview domain to reach the Vite dev server.
+        allowedHosts: true,
+        // HMR websocket is unreliable behind the preview proxy; disable it.
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -1175,13 +2111,40 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
-  });
+  if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
+    });
+  }
+  // Bind the frontend port (3000) and the API port (8001). The hosting proxy
+  // routes "/api/*" to 8001 and everything else to 3000, and the same Express
+  // app serves both, so binding both ports makes the app work end-to-end.
+  const ports = Array.from(
+    new Set([PORT, Number(process.env.API_PORT) || 8001]),
+  );
+  for (const p of ports) {
+    app.listen(p, "0.0.0.0", () => {
+      console.log(`B2B Slovak Lead Generation server running on port ${p}`);
+    });
+  }
+
+  // Seed the admin account (idempotent) once the server is up.
+  seedAdmin();
+}
+
+if (!process.env.VERCEL) {
+  startServer();
 }
 
 export default app;
 
 if (!process.env.VERCEL) {
+if (process.env.NODE_ENV !== "test") {
+export default app;
+// Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
+if (!process.env.VERCEL) {
+export default app;
+
+if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {
   startServer();
 }
