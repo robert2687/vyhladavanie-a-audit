@@ -2081,9 +2081,9 @@ app.post("/api/leads/email-me", requireAuth, async (req, res) => {
   }
 });
 
-// Start server with Vite middleware in dev or static files in production
+// Start server with Vite middleware in dev or static files in production.
+// On Vercel the app is served as a serverless function via api/index.ts, so none of this runs.
 async function startServer() {
-  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -2097,7 +2097,7 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else if (!process.env.VERCEL) {
+  } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -2105,11 +2105,6 @@ async function startServer() {
     });
   }
 
-  if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`B2B Slovak Lead Generation server running on port ${PORT}`);
-    });
-  }
   // Bind the frontend port (3000) and the API port (8001). The hosting proxy
   // routes "/api/*" to 8001 and everything else to 3000, and the same Express
   // app serves both, so binding both ports makes the app work end-to-end.
@@ -2126,16 +2121,9 @@ async function startServer() {
   seedAdmin();
 }
 
-if (!process.env.VERCEL) {
+// Only start a long-running server outside Vercel and outside tests.
+if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
   startServer();
 }
 
-if (process.env.NODE_ENV !== "test") {
 export default app;
-// Only start the server directly if executed directly (not when imported as a module in Vercel Serverless Functions)
-if (!process.env.VERCEL) {
-export default app;
-
-if (process.env.VERCEL !== "1" && !process.env.VERCEL_ENV) {
-  startServer();
-}
